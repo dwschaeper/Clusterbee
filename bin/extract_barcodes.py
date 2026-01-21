@@ -6,8 +6,11 @@ import regex
 import matplotlib.pyplot as plt
 
 
+translate = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+
+
 class BarcodeExtractor:
-    def __init__(self, name: str, polyt_min_threshold: int, barcode_len: int, umi_len: int, polyt_include: int, no_umi: bool):
+    def __init__(self, readID: str, polyt_min_threshold: int, barcode_len: int, umi_len: int, polyt_include: int, no_umi: bool):
         """
         Initialize the BarcodeExtractor class. This class functions to extract the barcode from a sequence and
         maintain easily accessed attributes.
@@ -20,7 +23,7 @@ class BarcodeExtractor:
             polyt_include (int):       The number of nucleotides labeled within the polyT to include in the search section
             no_umi (bool):             True if there are no UMIs used
         """
-        self.name = name
+        self.readID = readID
         self.polyt_min_threshold = polyt_min_threshold
         self.barcode_len = barcode_len
         self.umi_len = umi_len
@@ -30,11 +33,28 @@ class BarcodeExtractor:
         self.polyt_end = 0
         self.strand = ''
         self.upstream_tail = ''
-        self.putative_barcodes = []
+        self.putative_barcodes_encoding = []
         self.barcode = ''
         self.umi = ''
         self.barcode_start = -1
         self.distance_from_polyt = -100
+
+    @staticmethod
+    def encode(barcode):
+        """
+        Encode the barcode into a 32-bit integer
+ 
+        Args:
+            barcode (str): The barcode to be encoded
+        Returns:
+            int: The integer encoding
+        """
+        x = 0
+        for base in barcoe:
+            x = (x << 2) | translate[base]
+
+        return x
+
 
     def whitelist_match(self, whitelist: set, wiggle: int):
         """
@@ -54,9 +74,9 @@ class BarcodeExtractor:
                     self.barcode = checker
                     self.barcode_start = i
                     self.distance_from_polyt = len(self.upstream_tail) - (i + self.barcode_len)
-                    self.putative_barcodes = []
+                    self.putative_barcodes_encoding = []
                 else:
-                    self.putative_barcodes.append(checker)
+                    self.putative_barcodes_encoding.append(self.encode(checker))
         else:
             for i in range(lower_search, upper_search):
                 checker = self.upstream_tail[i:i + self.barcode_len]
@@ -64,11 +84,11 @@ class BarcodeExtractor:
                     self.barcode = checker
                     self.barcode_start = i
                     self.distance_from_polyt = len(self.upstream_tail) - (i + self.barcode_len)
-                    self.putative_barcodes = []
+                    self.putative_barcodes_encoding = []
                     self.umi = self.upstream_tail[i + self.barcode_len:i + self.barcode_len + self.umi_len]
                     break
                 else:
-                    self.putative_barcodes.append(checker)
+                    self.putative_barcodes_encoding.append(self.encode(checker))
 
 
     def find_upstream(self, sequence):
