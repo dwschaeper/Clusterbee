@@ -1,6 +1,7 @@
 import argparse
 
 from bin.extract_barcodes import extract_barcodes
+from bin.graph_deconvolution import graph_deconvolute
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -19,6 +20,8 @@ def parse_args():
                         help='The whitelist of cell barcodes where each line in the whitelist is a barcode.')
     parser.add_argument('--wiggle', default=3, type=int,
                         help='The range around the UMI length to look for exact barcode matches if whitelist is provided.')
+    parser.add_argument('--index_kmer_len', default=7, type=int,
+                        help='The kmer size to use when generating the index of anchor barcodes.')
 
     args = parser.parse_args()
 
@@ -33,7 +36,7 @@ if __name__ == '__main__':
             lines = file.readlines()
         lines = [line.strip() for line in lines]
         whitelist = set(lines)
-        extract_barcodes(fastq=arguments.input,
+        extractors = extract_barcodes(fastq=arguments.input,
                          polyt_min_threshold=arguments.polyT_min_threshold,
                          barcode_len=arguments.barcode_len,
                          no_umi=arguments.no_umi,
@@ -44,11 +47,13 @@ if __name__ == '__main__':
                          )
     
     else:
-        extract_barcodes(fastq=arguments.input, 
+        extractors = extract_barcodes(fastq=arguments.input, 
                          polyt_min_threshold=arguments.polyT_min_threshold, 
                          barcode_len=arguments.barcode_len,
                          no_umi=arguments.no_umi,
                          umi_len=arguments.umi_len,
                          polyt_include=arguments.polyt_include
                          )
+
+    graph_deconvolute(extractors, arguments.barcode_len, arguments.index_kmer_len)
 

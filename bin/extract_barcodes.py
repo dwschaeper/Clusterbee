@@ -33,27 +33,12 @@ class BarcodeExtractor:
         self.polyt_end = 0
         self.strand = ''
         self.upstream_tail = ''
-        self.putative_barcodes_encoding = []
+        self.putative_barcodes = []
         self.barcode = ''
+        self.barcod_encoding = ''
         self.umi = ''
         self.barcode_start = -1
         self.distance_from_polyt = -100
-
-    @staticmethod
-    def encode(barcode):
-        """
-        Encode the barcode into a 32-bit integer
- 
-        Args:
-            barcode (str): The barcode to be encoded
-        Returns:
-            int: The integer encoding
-        """
-        x = 0
-        for base in barcoe:
-            x = (x << 2) | translate[base]
-
-        return x
 
 
     def whitelist_match(self, whitelist: set, wiggle: int):
@@ -74,9 +59,9 @@ class BarcodeExtractor:
                     self.barcode = checker
                     self.barcode_start = i
                     self.distance_from_polyt = len(self.upstream_tail) - (i + self.barcode_len)
-                    self.putative_barcodes_encoding = []
+                    self.putative_barcode = []
                 else:
-                    self.putative_barcodes_encoding.append(self.encode(checker))
+                    self.putative_barcodes.append(checker)
         else:
             for i in range(lower_search, upper_search):
                 checker = self.upstream_tail[i:i + self.barcode_len]
@@ -84,11 +69,11 @@ class BarcodeExtractor:
                     self.barcode = checker
                     self.barcode_start = i
                     self.distance_from_polyt = len(self.upstream_tail) - (i + self.barcode_len)
-                    self.putative_barcodes_encoding = []
+                    self.putative_barcodes = []
                     self.umi = self.upstream_tail[i + self.barcode_len:i + self.barcode_len + self.umi_len]
                     break
                 else:
-                    self.putative_barcodes_encoding.append(self.encode(checker))
+                    self.putative_barcodesappend(checker)
 
 
     def find_upstream(self, sequence):
