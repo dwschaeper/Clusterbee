@@ -20,12 +20,12 @@ def encode(barcode: str) -> int:
     return x
 
 
-def build_anchor_index(anchors: set, barcode_len: int, k: int):
+def build_anchor_index(anchors: list, barcode_len: int, k: int):
     """
     Create kmer index over the anchor barcodes
 
     Args:
-        anchors (set):     The set of anchor barcodes
+        anchors (set):     The list of extractor objects for anchors
         barcode_len (int): Length of the barcodes
         k (int):           Size of the kmer
 
@@ -34,11 +34,11 @@ def build_anchor_index(anchors: set, barcode_len: int, k: int):
     """
     index = defaultdict(list)
 
-    for barcode in anchors:
-        encoded = encode(barcode)
+    for extractor in anchors:
+        encoded = encode(extractor.barcode)
         for i in range(barcode_len - k + 1):
-            kmer = barcode[i:i + k]
-            index[kmer].append((barcode,encoded))
+            kmer = extractor.barcode[i:i + k]
+            index[kmer].append(('ANCHOR_' + extractor.readID, encoded))
     
     return index
 
@@ -59,7 +59,7 @@ def hamming(e1: int, e2: int) -> int:
     return x.bit_count()
 
 
-def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: int):
+def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: int, readID: str):
     """
     Identify close anchors as candidates, then find distance between them.
 
@@ -69,6 +69,7 @@ def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: 
         index: index of the anchor barcodes
         barcode_len (int): Length of the barcodes
         k (int):           Size of the kmer
+        readID (str):      ReadID corresponding to the barcode
 
     Returns:
         list: edges for the graph
@@ -81,8 +82,9 @@ def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: 
         candidates.update(index.get(kmer, ()))
 
     for anchor in candidates:
-        inverse_hamming = 1 / hamming(anchor[1], barcode_encoding)
-        edges.append((anchor[0], barcode, inverse_hamming))
+        dist = hamming(anchor[1], barcode_encoding)
+        if dist > 3:
+            edges.append((anchor[0], readID, 1 / dist))
         
     return edges
 
@@ -96,18 +98,23 @@ def graph_deconvolute(extractors: list, barcode_len: int, k: int):
         barcode_len (int): Length of the barcodes
         k (int):           Size of the kmer
     """
-    anchor_set = set()
-    putative_set = set()
+    anchor_list = []
+    putative_list = []
     
-    for extractor in extractors:
+    while extractors:
+        extractor = extractors.pop()
         if extractor.barcode:
-            anchor_set.add(extractor.barcode)
+            anchor_list.append(extractor)
         else:
-            putative_set.update(extractor.putative_barcode)
-
-    anchor_index = build_anchor_index(anchor_set, barcode_len, k)
+            putative_list.append(extractor)
+    # anchor_set.add('GGTCACCAGAGGTAGT') # addding for small test set
+    
+    anchor_index = build_anchor_index(anchor_list, barcode_len, k)
     
     edge_list = []
-    for barcode in putative_set:
-        edges = find_edges(barcode, encode(barcode), anchor_index, barcode_len, k)
-        edge_list.extend(edges)
+    for extractor in putative_list:
+        for barcode in extractor.putative_barcodes:
+            edges = find_edges(barcode, encode(barcode), anchor_index, barcode_len, k, extractor.readID)
+            edge_list.extend(edges)
+    print(len(edges))
+
