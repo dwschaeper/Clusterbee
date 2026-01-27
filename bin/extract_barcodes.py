@@ -23,7 +23,7 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
         anchor_umi_holder (TextIO): The file to hold the anchor umi information
 
     Returns:
-        tuple(str, str): The barcode anchor if valid, otherwise None
+        str: The barcode anchor if valid, otherwise None
     """
     anchor = None
     umi = None
@@ -44,25 +44,25 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
 
         if putative_barcodes:
             for barcode in putative_barodes:
-                putative_set.write(f'{readID}\t{barcode}')
+                putative_set.write(f'{readID}\t{barcode}\n')
 
     else:
         for i in range(lower_search, upper_search):
             checker = upstream_tail[i:i + barcode_len]
+            umi = upstream_tail[i + barcode_len:i + barcode_len + umi_len]
             if checker in whitelist:
                 anchor = checker
                 putative_barcodes = []
-                umi = upstream_tail[i + barcode_len:i + barcode_len + umi_len]
-                anchor_umi_holder.write(f'{readID}\t{anchor}\t{UMI}')
+                anchor_umi_holder.write(f'{readID}\t{anchor}\t{umi}\n')
                 break
             else:
                 putative_barcodes.append(checker)
-
+                putative_umis.append(umi)
         if putative_barcodes:
             for barcode, umi in zip(putative_barcodes, putative_umis):
-                putative_set.write(f'{readID}\t{barcode}\t{umi}')
+                putative_set.write(f'{readID}\t{barcode}\t{umi}\n')
 
-    return anchor, umi
+    return anchor
 
 
 def find_upstream(sequence: str, polyt_include: int, polyt_min_threshold: int):
@@ -92,7 +92,7 @@ def find_upstream(sequence: str, polyt_include: int, polyt_min_threshold: int):
     return upstream_tail
 
 
-def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, no_umi: bool, umi_len: int, polyt_include: int, wiggle: int whitelist: set=None):
+def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, no_umi: bool, umi_len: int, polyt_include: int, wiggle: int, whitelist: set=None):
     """
     Given a fastq file, extract all the barcodes.
 
@@ -112,8 +112,8 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, no_
     anchors = {}
 
     reader = gzip.open(fastq, 'rt') if fastq.endswith('gz') else open(fastq, 'rt')
-    with open('../.putative_barcodes') as putative_set_file:
-        with open('../.anchor_umis') as umi_set_file:
+    with open('.putative_barcodes', 'w') as putative_set_file:
+        with open('.anchor_umis', 'w') as umi_set_file:
             with reader as file:
                 for record in FastqGeneralIterator(file):  # record is tuple of title, sequence, quality
                     upstream_tail = find_upstream(record[1], polyt_include, polyt_min_threshold)
