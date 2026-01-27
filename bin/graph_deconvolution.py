@@ -20,12 +20,12 @@ def encode(barcode: str) -> int:
     return x
 
 
-def build_anchor_index(anchors: list, barcode_len: int, k: int):
+def build_anchor_index(anchors: dict, barcode_len: int, k: int):
     """
     Create kmer index over the anchor barcodes
 
     Args:
-        anchors (set):     The list of extractor objects for anchors
+        anchors (dict):    The dictionary of anchors
         barcode_len (int): Length of the barcodes
         k (int):           Size of the kmer
 
@@ -34,11 +34,11 @@ def build_anchor_index(anchors: list, barcode_len: int, k: int):
     """
     index = defaultdict(list)
 
-    for extractor in anchors:
-        encoded = encode(extractor.barcode)
+    for name, barcode in anchors.items():
+        encoded = encode(barcode)
         for i in range(barcode_len - k + 1):
-            kmer = extractor.barcode[i:i + k]
-            index[kmer].append(('ANCHOR_' + extractor.readID, encoded))
+            kmer = barcode[i:i + k]
+            index[kmer].append((name, encoded))
     
     return index
 
@@ -83,38 +83,31 @@ def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: 
 
     for anchor in candidates:
         dist = hamming(anchor[1], barcode_encoding)
-        if dist > 3:
+        if dist < 3:
             edges.append((anchor[0], readID, 1 / dist))
         
     return edges
 
 
-def graph_deconvolute(extractors: list, barcode_len: int, k: int):
+def graph_deconvolute(anchors: dict, barcode_len: int, k: int):
     """
-    Takes a list of barcode extractor objects and builds the graph used to assign cell barcodes to reads.
+    Takes a list of identified barcode anchors and uses them with a graph to assign ambiguous cell barcodes
 
     Args:
-        extractors (list): List of extractor objects from each read that contains a polyT(A)
+        anchors (dict): Dict of anchors
         barcode_len (int): Length of the barcodes
-        k (int):           Size of the kmer
+        k (int):           Size of the kmer used in indexing
     """
-    anchor_list = []
-    putative_list = []
-    
-    while extractors:
-        extractor = extractors.pop()
-        if extractor.barcode:
-            anchor_list.append(extractor)
-        else:
-            putative_list.append(extractor)
-    # anchor_set.add('GGTCACCAGAGGTAGT') # addding for small test set
-    
-    anchor_index = build_anchor_index(anchor_list, barcode_len, k)
-    
+    anchor_index = build_anchor_index(anchors, barcode_len, k)
+
     edge_list = []
-    for extractor in putative_list:
-        for barcode in extractor.putative_barcodes:
-            edges = find_edges(barcode, encode(barcode), anchor_index, barcode_len, k, extractor.readID)
+    with open('.putative_barcodes', 'r') as putatives:
+        for line in putatives:
+            data = line.strip().split('\t')
+            readID = data[0]
+            putative_barcode = data[1]
+            edges = find_edges(putative_barcode, encode(putative_barcode), anchor_index, barcode_len, k, readID)
             edge_list.extend(edges)
-    print(len(edges))
+
+    print(edge_list)
 

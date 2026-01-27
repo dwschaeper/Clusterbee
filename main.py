@@ -36,7 +36,7 @@ if __name__ == '__main__':
             lines = file.readlines()
         lines = [line.strip() for line in lines]
         whitelist = set(lines)
-        extractors = extract_barcodes(fastq=arguments.input,
+        anchors = extract_barcodes(fastq=arguments.input,
                          polyt_min_threshold=arguments.polyT_min_threshold,
                          barcode_len=arguments.barcode_len,
                          no_umi=arguments.no_umi,
@@ -47,7 +47,7 @@ if __name__ == '__main__':
                          )
     
     else:
-        extractors = extract_barcodes(fastq=arguments.input, 
+        anchors = extract_barcodes(fastq=arguments.input, 
                          polyt_min_threshold=arguments.polyT_min_threshold, 
                          barcode_len=arguments.barcode_len,
                          no_umi=arguments.no_umi,
@@ -55,5 +55,5 @@ if __name__ == '__main__':
                          polyt_include=arguments.polyt_include
                          )
 
-    graph_deconvolute(extractors, arguments.barcode_len, arguments.index_kmer_len)
+    graph_deconvolute(anchors, arguments.barcode_len, arguments.index_kmer_len)
 
