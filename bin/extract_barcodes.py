@@ -2,6 +2,7 @@ from Bio.SeqIO.QualityIO import FastqGeneralIterator
 from Bio.Seq import reverse_complement
 import gzip
 import regex
+from collections import defaultdict
 from typing import TextIO
 
 
@@ -23,7 +24,8 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
         anchor_umi_holder (TextIO): The file to hold the anchor umi information
 
     Returns:
-        str: The barcode anchor if valid, otherwise None
+        str:  The barcode anchor if valid, otherwise None
+        list: The putative barcodes if valid, otherwise None
     """
     anchor = None
     umi = None
@@ -37,7 +39,7 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
             checker = upstream_tail[i:i + barcode_len]
             if checker in whitelist:
                 anchor = checker
-                putative_barcodes = []
+                putative_barcodes = None
                 break
             else:
                 putative_barcodes.append(checker)
@@ -53,7 +55,7 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
             umi = upstream_tail[i + barcode_len:i + barcode_len + umi_len]
             if checker in whitelist:
                 anchor = checker
-                putative_barcodes = []
+                putative_barcodes = None
                 anchor_umi_holder.write(f'{readID}\t{anchor}\t{umi}\n')
                 break
             else:
@@ -64,7 +66,7 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
                 if len(barcode) == barcode_len and len(umi) == umi_len:
                     putative_set.write(f'{readID}\t{barcode}\t{umi}\n')
 
-    return anchor
+    return anchor, putative_barcodes
 
 
 def find_upstream(sequence: str, polyt_include: int, polyt_min_threshold: int):
@@ -109,9 +111,13 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, no_
         whitelist (set):           The whitelist of cell barcodes that are expected as a set for quick accession
 
     Returns:
-        list: A list of BarcodeExtractor object. Each entry in the list corresponds to a single read
+        defaultdict: anchor barcode: frequency
+        defaultdict: putative barcode: frequency
     """
-    anchors = {}
+    anchor_barcodes = defaultdict(int)
+    putative_barcodes = defaultdict(int)
+    reads_with_anchors = 0
+    reads_without_anchors = 0
 
     reader = gzip.open(fastq, 'rt') if fastq.endswith('gz') else open(fastq, 'rt')
     with open('.putative_barcodes', 'w') as putative_set_file:
@@ -122,8 +128,14 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, no_
             
                     # perform exact matching if a whitelist is provided
                     if whitelist and upstream_tail:
-                        anchor = whitelist_match(record[0], whitelist, wiggle, umi_len, barcode_len, polyt_include, no_umi, upstream_tail, putative_set_file, umi_set_file)
+                        anchor, putatives = whitelist_match(record[0], whitelist, wiggle, umi_len, barcode_len, polyt_include, no_umi, upstream_tail, putative_set_file, umi_set_file)
                         if anchor:
-                            anchors[record[0]] = anchor
-
-    return anchors
+                            reads_with_anchors += 1
+                            anchor_barcodes[anchor] += 1
+                        if putatives:
+                            reads_without_anchors += 1
+                            for putative in putatives:
+                                putative_barcodes[putative] += 1
+    print(f'Reads with anchors: {reads_with_anchors}')
+    print(f'Reads without anchors: {reads_without_anchors}')
+    return anchor_barcodes, putative_barcodes

@@ -1,7 +1,7 @@
 import argparse
 
 from bin.extract_barcodes import extract_barcodes
-from bin.graph_deconvolution import graph_deconvolute
+from bin.edge_construction import construct_graph_edges
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -18,10 +18,14 @@ def parse_args():
                         help='How many bases within the found polyT to include when searching for barcodes and UMIs to account for the cases where these sequences end in T and merge with the polyT.')
     parser.add_argument('--cell_barcode_whitelist', default=None, type=str,
                         help='The whitelist of cell barcodes where each line in the whitelist is a barcode.')
-    parser.add_argument('--wiggle', default=3, type=int,
+    parser.add_argument('--wiggle', default=1, type=int,
                         help='The range around the UMI length to look for exact barcode matches if whitelist is provided.')
     parser.add_argument('--index_kmer_len', default=4, type=int,
-                        help='The kmer size to use when generating the index of anchor barcodes.')
+                        help='The kmer size to use when generating the disjoint kmer index of anchor barcodes.')
+    parser.add_argument('--min_kmer_hits', default=3, type=int,
+                        help='The minimum number of kmer matches a putative barcode must have to an anchor to be considered a candidate.')
+    parser.add_argument('--max_dist', default=2, type=int,
+                        help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
 
     args = parser.parse_args()
 
@@ -36,7 +40,7 @@ if __name__ == '__main__':
             lines = file.readlines()
         lines = [line.strip() for line in lines]
         whitelist = set(lines)
-        anchors = extract_barcodes(fastq=arguments.input,
+        anchors, putatives = extract_barcodes(fastq=arguments.input,
                          polyt_min_threshold=arguments.polyT_min_threshold,
                          barcode_len=arguments.barcode_len,
                          no_umi=arguments.no_umi,
@@ -47,13 +51,14 @@ if __name__ == '__main__':
                          )
     
     else:
-        anchors = extract_barcodes(fastq=arguments.input, 
+        anchors, putatives = extract_barcodes(fastq=arguments.input, 
                          polyt_min_threshold=arguments.polyT_min_threshold, 
                          barcode_len=arguments.barcode_len,
                          no_umi=arguments.no_umi,
                          umi_len=arguments.umi_len,
                          polyt_include=arguments.polyt_include
                          )
-
-    graph_deconvolute(anchors, arguments.barcode_len, arguments.index_kmer_len, 5, 2)
+    print(f'Number of anchor barcodes: {len(anchors)}')
+    print(f'Number of putative barcodes: {len(putatives)}')
+    construct_graph_edges(anchors, putatives, arguments.max_dist)
 
