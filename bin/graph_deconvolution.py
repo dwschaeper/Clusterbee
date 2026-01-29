@@ -1,8 +1,8 @@
 from collections import defaultdict
 from itertools import combinations
+import math
 
 TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
-
 
 def encode(barcode: str) -> int:
     """
@@ -30,17 +30,21 @@ def build_anchor_index(anchors: dict, barcode_len: int, k: int):
         k (int):           Size of the kmer
 
     Returns:
-        defaultdict(list): Index of anchors kmer: (barcode, encoded barcode)
+        defaultdict(list): Index of anchors kmer: anchor_id
+        dict:              anchor_id: encoded
     """
     index = defaultdict(list)
+    anchor_encodings = {}
 
     for name, barcode in anchors.items():
         encoded = encode(barcode)
+        anchor_encodings[name] = encoded
+
         for i in range(barcode_len - k + 1):
             kmer = barcode[i:i + k]
-            index[kmer].append((name, encoded))
+            index[kmer].append(name)
     
-    return index
+    return index, anchor_encodings
 
 
 def hamming(e1: int, e2: int) -> int:
@@ -59,7 +63,7 @@ def hamming(e1: int, e2: int) -> int:
     return x.bit_count()
 
 
-def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: int, readID: str):
+def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: int, readID: str, min_hits: int, max_mismatches: int, anchor_encodings: list):
     """
     Identify close anchors as candidates, then find distance between them.
 
@@ -74,22 +78,32 @@ def find_edges(barcode: str, barcode_encoding: int, index, barcode_len: int, k: 
     Returns:
         list: edges for the graph
     """
-    candidates = set()
+    hit_counts = defaultdict(int)
     edges = []
+    index_local = index
+    anchor_encodings_local = anchor_encodings
 
     for i in range(barcode_len - k + 1):
         kmer = barcode[i:i + k]
-        candidates.update(index.get(kmer, ()))
+        for anchor_id in index_local.get(kmer, ()):
+            hit_counts[anchor_id] += 1
 
-    for anchor in candidates:
-        dist = hamming(anchor[1], barcode_encoding)
-        if dist < 3:
-            edges.append((anchor[0], readID, 1 / dist))
+    for anchor_id, hits in hit_counts.items():
+        if hits < min_hits:
+            continue
+
+        min_possible_mismatches = math.ceil(barcode_len - hits * k) / k
+        if min_possible_mismatches > max_mismatches:
+            continue
+
+        dist = hamming(anchor_encodings_local[anchor_id], barcode_encoding)
+        if dist <= max_mismatches:
+            edges.append((anchor_id, readID, dist))
         
     return edges
 
 
-def graph_deconvolute(anchors: dict, barcode_len: int, k: int):
+def graph_deconvolute(anchors: dict, barcode_len: int, k: int, min_hits: int, max_mismatches: int):
     """
     Takes a list of identified barcode anchors and uses them with a graph to assign ambiguous cell barcodes
 
@@ -98,16 +112,17 @@ def graph_deconvolute(anchors: dict, barcode_len: int, k: int):
         barcode_len (int): Length of the barcodes
         k (int):           Size of the kmer used in indexing
     """
-    anchor_index = build_anchor_index(anchors, barcode_len, k)
+    anchor_index, anchor_encodings = build_anchor_index(anchors, barcode_len, k)
 
-    edge_list = []
-    with open('.putative_barcodes', 'r') as putatives:
-        for line in putatives:
-            data = line.strip().split('\t')
-            readID = data[0]
-            putative_barcode = data[1]
-            edges = find_edges(putative_barcode, encode(putative_barcode), anchor_index, barcode_len, k, readID)
-            edge_list.extend(edges)
+    with open('.graph_edges', 'w') as graph_edges:
+        with open('.putative_barcodes', 'r') as putatives:
+            for line in putatives:
+                data = line.strip().split('\t')
+                readID = data[0]
+                putative_barcode = data[1]
+                encoded = encode(putative_barcode)
+                edges = find_edges(putative_barcode, encoded, anchor_index, barcode_len, k, readID, min_hits, max_mismatches, anchor_encodings)
+                for edge in edges:
+                    graph_edges.write(f'{edge[0]}\t{edge[1]}\t{edge[2]}\n')
 
-    print(edge_list)
 

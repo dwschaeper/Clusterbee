@@ -44,7 +44,8 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
 
         if putative_barcodes:
             for barcode in putative_barodes:
-                putative_set.write(f'{readID}\t{barcode}\n')
+                if len(barcode) == barcode_len:
+                    putative_set.write(f'{readID}\t{barcode}\n')
 
     else:
         for i in range(lower_search, upper_search):
@@ -60,7 +61,8 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
                 putative_umis.append(umi)
         if putative_barcodes:
             for barcode, umi in zip(putative_barcodes, putative_umis):
-                putative_set.write(f'{readID}\t{barcode}\t{umi}\n')
+                if len(barcode) == barcode_len and len(umi) == umi_len:
+                    putative_set.write(f'{readID}\t{barcode}\t{umi}\n')
 
     return anchor
 
