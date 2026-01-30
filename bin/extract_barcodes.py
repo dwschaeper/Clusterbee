@@ -32,7 +32,7 @@ def whitelist_match(readID: str, whitelist: set, wiggle: int, umi_len: int, barc
     putative_barcodes = []
     putative_umis = []
     lower_search = len(upstream_tail) - umi_len - wiggle - polyt_include - barcode_len
-    upper_search = len(upstream_tail) - umi_len + wiggle - polyt_include - barcode_len + 1 # adjust for 0-based indexing
+    upper_search = len(upstream_tail) - umi_len + wiggle + polyt_include - barcode_len + 1 # adjust for 0-based indexing
 
     if no_umi:
         for i in range(lower_search, upper_search):

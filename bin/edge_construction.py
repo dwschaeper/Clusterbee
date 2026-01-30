@@ -1,4 +1,8 @@
-from collections import defaultdict, Counter
+from collections import defaultdict
+from itertools import combinations
+import matplotlib.pyplot as plt
+
+TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 
 class TrieNode:
     """
@@ -53,6 +57,57 @@ def depth_first_search(node: TrieNode, putative_barcode: str, pos: int, mismatch
         depth_first_search(child, putative_barcode, pos + 1, mismatches + (trie_base != barcode_base), max_hamming_dist, results)
 
 
+def encode(barcode: str) -> int:
+    """
+    Encode the barcode into a 32-bit integer
+
+    Args:
+        barcode (str): The barcode to be encoded
+            
+    Returns:
+        int: The integer encoding
+    """
+    x = 0
+    for base in barcode:
+        x = (x << 2) | TRANSLATE[base]
+    return x
+
+
+def hamming(e1: int, e2: int) -> int:
+    """
+    Calculate the hamming distance between encoded barcodes
+
+    Args:
+        e1 (int): encoding of barcode 1
+        e2 (int): encoding of barcode 2
+
+    Returns:
+        int: hamming distance between barcodes
+    """
+    x = e1 ^ e2
+    x = (x | (x >> 1)) & 0x55555555
+    return x.bit_count()
+
+
+def calculate_anchor_neighborhoods(putative_barcodes):
+    """
+    Takes the putative barcodes associated with a single anchor and calculate the
+    hamming distance between them all.
+
+    Args:
+        putative_barcodes (list): List of tuples, (barcode, encoded) for each putative for an anchor
+
+    Returns:
+        list: graph edges for each barcode pair
+    """
+    edges = []
+    for (barcode1, encoded1), (barcode2, encoded2) in combinations(putative_barcodes, 2):
+        dist = 1 / hamming(encoded1, encoded2)
+        edges.append(f'{barcode1}\t{barcode2}\t{dist}')
+
+    return edges
+
+
 def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], max_hamming_dist: int):
     """
     Build graph edges using trie-based search bounded by hamming distance.
@@ -67,15 +122,43 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
         insert(trie, barcode)
 
     edges = 0
+    without_matches = 0
+    with_matches = 0
+    neighborhood_edge_count = 0
+    anchor_candidates = defaultdict(list)
+    anchor_size_freq = defaultdict(int)
+    
     with open(".graph_edges", "w") as graph_edges:
         for putative_barcode, put_freq in putatives.items():
             matches = []
             depth_first_search(trie, putative_barcode, 0, 0, max_hamming_dist, matches)
-
+            if not matches:
+                without_matches += 1
+            else:
+                with_matches += 1
             for anchor_barcode, mismatches in matches:
                 edges += 1
+                anchor_candidates[anchor_barcode].append((putative_barcode, encode(putative_barcode)))
                 graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{1 / mismatches}\n')
 
-    print(f'Number of edges: {edges}')
-    return edges
+        for anchor, putatives in anchor_candidates.items():
+            neighborhood_edges = calculate_anchor_neighborhoods(putatives)
+            for neighborhood_edge in neighborhood_edges:
+                graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
+                neighborhood_edge_count += 1
+            
+
+    # development metrics
+    print(f'Number of anchor edges: {edges}')
+    print(f'Number of barcodes without associated edges: {without_matches}\n')
+    print(f'Number of barcodes with associated edges: {with_matches}\n')
+    print(f'Neighborhood edge count: {neighborhood_edge_count}\n')
+
+    anchor_sizes = [len(x) for x in anchor_candidates.values()]
+    for val in anchor_sizes:
+        anchor_size_freq[val] += 1
+    print(anchor_size_freq)
+    plt.hist(anchor_sizes)
+    plt.savefig('anchor_sizes.png')
+
 

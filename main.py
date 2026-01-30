@@ -20,10 +20,6 @@ def parse_args():
                         help='The whitelist of cell barcodes where each line in the whitelist is a barcode.')
     parser.add_argument('--wiggle', default=1, type=int,
                         help='The range around the UMI length to look for exact barcode matches if whitelist is provided.')
-    parser.add_argument('--index_kmer_len', default=4, type=int,
-                        help='The kmer size to use when generating the disjoint kmer index of anchor barcodes.')
-    parser.add_argument('--min_kmer_hits', default=3, type=int,
-                        help='The minimum number of kmer matches a putative barcode must have to an anchor to be considered a candidate.')
     parser.add_argument('--max_dist', default=2, type=int,
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
 
