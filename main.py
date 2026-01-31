@@ -2,6 +2,7 @@ import argparse
 
 from bin.extract_barcodes import extract_barcodes
 from bin.edge_construction import construct_graph_edges
+from bin.make_graph import make_graph
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -57,4 +58,7 @@ if __name__ == '__main__':
     print(f'Number of anchor barcodes: {len(anchors)}')
     print(f'Number of putative barcodes: {len(putatives)}')
     construct_graph_edges(anchors, putatives, arguments.max_dist)
+
+    print('Making graph')
+    make_graph()
 

@@ -1,6 +1,7 @@
 from collections import defaultdict
 from itertools import combinations
 import matplotlib.pyplot as plt
+import math
 
 TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 
@@ -101,9 +102,10 @@ def calculate_anchor_neighborhoods(putative_barcodes):
         list: graph edges for each barcode pair
     """
     edges = []
-    for (barcode1, encoded1), (barcode2, encoded2) in combinations(putative_barcodes, 2):
+    for (barcode1, encoded1, freq1), (barcode2, encoded2, freq2) in combinations(putative_barcodes, 2):
         dist = 1 / hamming(encoded1, encoded2)
-        edges.append(f'{barcode1}\t{barcode2}\t{dist}')
+        weight = 0.3 * dist * math.sqrt(math.log(freq1) * math.log(freq2))
+        edges.append((barcode1, barcode2, weight))
 
     return edges
 
@@ -138,8 +140,9 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                 with_matches += 1
             for anchor_barcode, mismatches in matches:
                 edges += 1
-                anchor_candidates[anchor_barcode].append((putative_barcode, encode(putative_barcode)))
-                graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{1 / mismatches}\n')
+                anchor_candidates[anchor_barcode].append((putative_barcode, encode(putative_barcode), put_freq))
+                weight = (1 / mismatches) * math.sqrt(math.log(anchors[anchor_barcode]) * math.log(put_freq))
+                graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
 
         for anchor, putatives in anchor_candidates.items():
             neighborhood_edges = calculate_anchor_neighborhoods(putatives)
