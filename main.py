@@ -55,8 +55,10 @@ if __name__ == '__main__':
                          umi_len=arguments.umi_len,
                          polyt_include=arguments.polyt_include
                          )
+
     print(f'Number of anchor barcodes: {len(anchors)}')
     print(f'Number of putative barcodes: {len(putatives)}')
+
     construct_graph_edges(anchors, putatives, arguments.max_dist)
 
     print('Making graph')
