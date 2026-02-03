@@ -129,6 +129,8 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     neighborhood_edge_count = 0
     anchor_candidates = defaultdict(list)
     anchor_size_freq = defaultdict(int)
+    non_anchor_barcodes = set()
+    non_anchor_reads = set()
     
     with open(".graph_edges", "w") as graph_edges:
         for putative_barcode, put_freq in putatives.items():
@@ -141,7 +143,11 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
             for anchor_barcode, mismatches in matches:
                 edges += 1
                 anchor_candidates[anchor_barcode].append((putative_barcode, encode(putative_barcode), put_freq))
-                weight = (1 / mismatches) * math.sqrt(math.log(anchors[anchor_barcode]) * math.log(put_freq))
+                try:
+                    weight = (1 / mismatches) * math.sqrt(math.log(anchors[anchor_barcode]) * math.log(put_freq))
+                except ZeroDivisionError:  # putative anchors are also stored as putative barcodes
+                    weight = 2
+                non_anchor_barcodes.add(putative_barcode)
                 graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
 
         for anchor, putatives in anchor_candidates.items():
@@ -149,14 +155,21 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
             for neighborhood_edge in neighborhood_edges:
                 graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
                 neighborhood_edge_count += 1
-            
 
     # development metrics
     print(f'Number of anchor edges: {edges}')
-    print(f'Number of barcodes without associated edges: {without_matches}\n')
-    print(f'Number of barcodes with associated edges: {with_matches}\n')
-    print(f'Neighborhood edge count: {neighborhood_edge_count}\n')
+    print(f'Number of barcodes without associated edges: {without_matches}')
+    print(f'Number of barcodes with associated edges: {with_matches}')
+    print(f'Neighborhood edge count: {neighborhood_edge_count}')
 
+    # find out how many reads are covered by the non-anchor nodes
+    with open('.putative_barcodes', 'r') as infile:
+        for line in infile:
+            row = line.strip().split('\t')
+            if row[1] in non_anchor_barcodes:
+                non_anchor_reads.add(row[0])
+    print(f'Number of reads associated with non-anchor barcodes: {len(non_anchor_reads)}')
+                
     anchor_sizes = [len(x) for x in anchor_candidates.values()]
     for val in anchor_sizes:
         anchor_size_freq[val] += 1
