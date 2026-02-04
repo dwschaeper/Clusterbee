@@ -36,7 +36,7 @@ if __name__ == '__main__':
         lines = file.readlines()
     lines = [line.strip() for line in lines]
     whitelist = set(lines)
-    anchors, putatives = extract_barcodes(fastq=arguments.input,
+    putative_anchors, putative_barcodes = extract_barcodes(fastq=arguments.input,
                      polyt_min_threshold=arguments.polyT_min_threshold,
                      barcode_len=arguments.barcode_len,
                      umi_len=arguments.umi_len,
@@ -45,11 +45,11 @@ if __name__ == '__main__':
                      whitelist=whitelist
                      )
 
-    print(f'Number of putative anchor barcodes: {len(anchors)}')
-    print(f'Number of putative barcodes: {len(putatives)}')
+    print(f'Number of putative anchor barcodes: {len(putative_anchors)}')
+    print(f'Number of putative barcodes: {len(putative_barcodes)}')
 
-    construct_graph_edges(anchors, putatives, arguments.max_dist)
+    construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist)
 
     print('Making graph')
-    make_graph()
+    make_graph(putative_anchors, putative_barcodes)
 

@@ -143,13 +143,11 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
             for anchor_barcode, mismatches in matches:
                 edges += 1
                 anchor_candidates[anchor_barcode].append((putative_barcode, encode(putative_barcode), put_freq))
-                try:
+                if mismatches != 0:  # don't make an edge between putative anchor and itself
                     weight = (1 / mismatches) * math.sqrt(math.log(anchors[anchor_barcode]) * math.log(put_freq))
-                except ZeroDivisionError:  # putative anchors are also stored as putative barcodes
-                    weight = 2
-                non_anchor_barcodes.add(putative_barcode)
-                graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
-
+                    non_anchor_barcodes.add(putative_barcode)
+                    graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
+               
         for anchor, putatives in anchor_candidates.items():
             neighborhood_edges = calculate_anchor_neighborhoods(putatives)
             for neighborhood_edge in neighborhood_edges:
