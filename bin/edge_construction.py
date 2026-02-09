@@ -103,8 +103,8 @@ def calculate_anchor_neighborhoods(putative_barcodes):
     """
     edges = []
     for (barcode1, encoded1, freq1), (barcode2, encoded2, freq2) in combinations(putative_barcodes, 2):
-        dist = 1 / hamming(encoded1, encoded2)
-        weight = 0.3 * dist * math.sqrt(math.log(freq1) * math.log(freq2))
+        dist = hamming(encoded1, encoded2)
+        weight = 0.1 * (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
         edges.append((barcode1, barcode2, weight))
 
     return edges
@@ -144,10 +144,13 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                 edges += 1
                 anchor_candidates[anchor_barcode].append((putative_barcode, encode(putative_barcode), put_freq))
                 if mismatches != 0:  # don't make an edge between putative anchor and itself
-                    weight = (1 / mismatches) * math.sqrt(math.log(anchors[anchor_barcode]) * math.log(put_freq))
                     non_anchor_barcodes.add(putative_barcode)
-                    graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
-               
+                weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches) 
+                graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
+
+    with open('anchor_freq.csv', 'w') as sizes:
+        for key, value in anchors.items():
+            sizes.write(f'{key},{value}\n')
         for anchor, putatives in anchor_candidates.items():
             neighborhood_edges = calculate_anchor_neighborhoods(putatives)
             for neighborhood_edge in neighborhood_edges:

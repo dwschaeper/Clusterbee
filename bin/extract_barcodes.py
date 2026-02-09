@@ -3,8 +3,7 @@ from Bio.Seq import reverse_complement
 import gzip
 import regex
 from collections import defaultdict, Counter
-from typing import TextIO
-import matplotlib.pyplot as plt
+import numpy as np
 
 
 def whitelist_match(whitelist: set, wiggle: int, umi_len: int, barcode_len: int, polyt_include: int, upstream_tail: str):
@@ -74,63 +73,6 @@ def find_upstream(sequence: str, polyt_include: int, polyt_min_threshold: int):
     return upstream_tail
 
 
-#def find_supported_anchors(all_anchors: list[tuple[str, str]], used_umi: bool):
-#    """
-#    Finds realistic anchor barcodes from the set of exact match barcodes.
-#
-#    Args:
-#        all_anchors (list): A list of all the barcodes
-#        used_umi (bool):    Whether or not a UMI was used
-#
-#    Returns:
-#        set:  IDs for the reads with anchors
-#        list: The supported anchor barcodes
-#        list: The UMIs for the supported anchor barcodes, only returned if used_umi=True
-#    """
-#    barcodes = defaultdict(int)
-#    pass_barcodes = set()
-#    final_barcodes = []
-#    final_names = set()
-#    final_umis = []
-
-#    if used_umi:
-#        for name, barcode, umi in all_anchors:
-#            barcodes[barcode] += 1
-#    else:
-#        for name, barcode in all_anchors:
-#            barcodes[barcode] += 1
-#    
-#    # plot barcode usage frequency
-#    potential_anchor_freq = Counter(barcodes.values())
-#    plt.figure(figsize=(8,5))
-#    plt.scatter(potential_anchor_freq.keys(), potential_anchor_freq.values())
-#    plt.xlabel('Barcodes supporting anchor')
-#    plt.ylabel('Frequency')
-#    plt.savefig('anchor_elbow_plot.png')
-#   
-#
-#    for barcode, freq in barcodes.items():
-#        if freq >= 40:  # simple cutoff for development purposes
-#            pass_barcodes.add(barcode)
-#
-#    if used_umi:
-#        for name, barcode, umi in all_anchors:
-#            if barcode in pass_barcodes:
-#                final_barcodes.append(barcode)
-#                final_names.add(name)
-#                final_umis.append(umi)
-#
-#        return final_names, final_barcodes, final_umis
-#
-#    else:
-#        for name, barcode in all_anchors:
-#            if barcode in pass_barcodes:
-#                final_barcodes.append(barcode)
-#                final_names.add(name)
-#
-#        return final_names, final_barcodes
-
-
 def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, umi_len: int, polyt_include: int, wiggle: int, whitelist: set=None):
     """
     Given a fastq file, extract all the barcodes.
@@ -168,7 +110,7 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, umi
                         anchor, anchor_umi, putative_barcodes, putative_umis = whitelist_match(whitelist, wiggle, umi_len, barcode_len, polyt_include, upstream_tail)
                         # append results to collection
                         if anchor:
-                            anchor_set_file.write(f'{record[0]}\t{barcode}\t{umi}\n')
+                            anchor_set_file.write(f'{record[0]}\t{anchor}\t{anchor_umi}\n')
                             putative_anchors_freq[anchor] += 1
                             reads_with_putative_anchor_count += 1
 
@@ -176,9 +118,6 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, umi
                             putative_set_file.write(f'{record[0]}\t{barcode}\t{umi}\n')
                             putative_barcodes_freq[barcode] += 1
     
-    # THIS SHOULD BE DONE AT THE GRAPH LEVEL
-    # identify which anchors are well supported and keep as final
-    # anchor_names, anchor_barcodes, anchor_umis = find_supported_anchors(putative_anchors, True)
     
     # write out the final anchors and putative barcodes
     #with open('.putative_barcodes', 'w') as putative_set_file:
