@@ -4,6 +4,9 @@ import gzip
 import regex
 from collections import defaultdict, Counter
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def whitelist_match(whitelist: set, wiggle: int, umi_len: int, barcode_len: int, polyt_include: int, upstream_tail: str):
@@ -40,8 +43,9 @@ def whitelist_match(whitelist: set, wiggle: int, umi_len: int, barcode_len: int,
         if checker in whitelist:
             anchor = checker
             anchor_umi = umi
-        putative_barcodes.append(checker)
-        putative_umis.append(umi)
+        else:
+            putative_barcodes.append(checker)
+            putative_umis.append(umi)
 
     return anchor, anchor_umi, putative_barcodes, putative_umis
 
@@ -90,10 +94,12 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, umi
         defaultdict: anchor barcode: frequency
         defaultdict: putative barcode: frequency
     """
+    logger.info('Beginning extraction')
     putative_anchors_freq = defaultdict(int)
     putative_barcodes_freq = defaultdict(int)
     polya_found_reads = 0
     reads_with_putative_anchor_count = 0
+    processed = 0
     
     # stream through fastq file
     reader = gzip.open(fastq, 'rt') if fastq.endswith('gz') else open(fastq, 'rt')
@@ -117,22 +123,14 @@ def extract_barcodes(fastq: str, polyt_min_threshold: int, barcode_len: int, umi
                         for barcode, umi in zip(putative_barcodes, putative_umis):
                             putative_set_file.write(f'{record[0]}\t{barcode}\t{umi}\n')
                             putative_barcodes_freq[barcode] += 1
+                    processed += 1
+                    if processed % 500000 == 0:
+                        logger.info('Extracted barcodes from %d reads', processed)
     
-    
-    # write out the final anchors and putative barcodes
-    #with open('.putative_barcodes', 'w') as putative_set_file:
-    #    with open('.anchors', 'w') as anchor_set_file:
-    #        for name, barcode, umi in zip(anchor_names, anchor_barcodes, anchor_umis):
-    #            anchor_barcodes_freq[barcode] += 1
-    #            reads_with_anchors += 1
-    #            anchor_set_file.write(f'{name}\t{barcode}\t{umi}\n')
-    #        for name, barcodes, umis in all_putative_barcodes:
-    #            if name not in anchor_names:
-    #                reads_without_anchors += 1
-    #                for barcode, umi in zip(barcodes, umis):
-    #                    putative_barcodes_freq[barcode] += 1
-    #                    putative_set_file.write(f'{name}\t{barcode}\t{umi}\n')
+    logger.info('polyA read+ reads found: %d', polya_found_reads)
+    logger.info('Reads with putative anchors: %d', reads_with_putative_anchor_count)
+    logger.info('Reads with polyA but no anchor: %d', polya_found_reads - reads_with_putative_anchor_count)
+    logger.info('Number of putative anchor barcodes: %d', len(putative_anchors_freq))
+    logger.info('Number of putative barcodes: %d', len(putative_barcodes_freq))
 
-    print(f'polyA read+ reads found: {polya_found_reads}')            
-    print(f'Reads with putative anchors: {reads_with_putative_anchor_count}')
     return putative_anchors_freq, putative_barcodes_freq

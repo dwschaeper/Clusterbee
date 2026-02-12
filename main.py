@@ -1,8 +1,15 @@
 import argparse
+import logging
 
+from bin.logging_config import setup_logging
 from bin.extract_barcodes import extract_barcodes
 from bin.edge_construction import construct_graph_edges
 from bin.make_graph import make_graph
+
+
+setup_logging(level=logging.INFO, logfile="GBBD.log")
+logger = logging.getLogger(__name__)
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -29,8 +36,10 @@ def parse_args():
     return args
 
 if __name__ == '__main__':
-    arguments = parse_args()
+    logger.info("Starting program")
 
+    arguments = parse_args()
+    
     # read in the whitelist
     with open(arguments.cell_barcode_whitelist, 'r') as file:
         lines = file.readlines()
@@ -45,11 +54,7 @@ if __name__ == '__main__':
                      whitelist=whitelist
                      )
 
-    print(f'Number of putative anchor barcodes: {len(putative_anchors)}')
-    print(f'Number of putative barcodes: {len(putative_barcodes)}')
-
     construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist)
 
-    print('Making graph')
     make_graph(putative_anchors, putative_barcodes)
 

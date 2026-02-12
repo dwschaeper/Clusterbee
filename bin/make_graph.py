@@ -3,6 +3,9 @@ import igraph as ig
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def find_supported_communities_cutoff(put_community_freq: dict[str, int]):
@@ -58,7 +61,7 @@ def filter_anchorless(graph, anchorless):
     for name, community in zip(graph.vs['name'], graph.vs['community']):
         if community in anchorless:
             delete_nodes.append(name)
-    print(f'Number of nodes in anchorless communities: {len(delete_nodes)}')
+    logger.info('Number of nodes in anchorless communities that will be deleted: %d', len(delete_nodes))
     graph.delete_vertices(delete_nodes)
 
 
@@ -74,11 +77,21 @@ def get_anchor_communities(graph):
     return anchor_communities, anchorless_communities
 
 
+def knee_filter(graph, community_freq, cutoff):
+    delete_nodes = []
+    for name, community in zip(graph.vs['name'], graph.vs['community']):
+        if community_freq[community] < cutoff:
+            delete_nodes.append(name)
+
+    graph.delete_vertices(delete_nodes)
+
+
 def write_info(graph, header):
     anchor_freq = dict.fromkeys(set(graph.vs['community']), 0)
     reads_freq = defaultdict(int)
     node_count = defaultdict(int)
     communities = set()
+
     for community, node_type, freq in zip(graph.vs['community'], graph.vs['type'], graph.vs['freq']):
         if node_type == 'anchor':
             anchor_freq[community] += 1
@@ -98,15 +111,15 @@ def write_info(graph, header):
         else:
             multi_anchor_communities += 1
 
-    print(header)
-
-    print(f'Number of communities: {len(communities)}')
-    print(f'Number of zero anchor communities: {no_anchor_communities}')
-    print(f'Number of one anchor communities: {one_anchor_communities}')
-    print(f'Number of multi anchor communities: {multi_anchor_communities}')
-
-    #print(f'Reads per community distribution:\n{Counter(reads_freq.values())}')  
-    print(f'Barcodes per community distribution:\n{Counter(node_count.values())}')   
+    logger.info(header + '\n'
+               '  Number of communities              : %d\n'
+               '  Number of zero anchor communities  : %d\n'
+               '  Number of one anchor communities   : %d\n'
+               '  Number of multi anchor communities : %d\n'
+               '  Number of anchors per community    :\n\t%s\n'
+               '  Barcodes per community distribution:\n\t%s',
+               len(communities), no_anchor_communities, one_anchor_communities, 
+               multi_anchor_communities, str(Counter(anchor_freq.values())), str(Counter(node_count.values())))   
         
 
 def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
@@ -132,11 +145,13 @@ def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
 
 
 def make_graph(put_anchor_freq, put_barcode_freq):
+    logger.info('making the graph')
     edges = []
     weights = []
     nodes = set()
+    anchor_nodes = set(put_anchor_freq.keys())
+    anchor_anchor_edges = 0
 
-    print('making graph')
     with open('.graph_edges') as graph_file:
         for line in graph_file:
             node1, node2, weight = line.strip().split('\t')
@@ -144,38 +159,36 @@ def make_graph(put_anchor_freq, put_barcode_freq):
             weights.append(float(weight))
             nodes.add(node1)
             nodes.add(node2)
+            if node1 in anchor_nodes and node2 in anchor_nodes:
+                anchor_anchor_edges += 1
     
     graph = ig.Graph.TupleList(edges, directed=False)
     graph.es['weight'] = weights
+    logger.info('Number of anchor-anchor edges: %d', anchor_anchor_edges)
 
-    print('adding attributes')
     add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
     # degree distribution
-    print(Counter(graph.vs['degree']))
-    #print('remove singletons')
-    #remove_putative_singletons(graph)
+    # logger.info('The degree distribution of the graph is:\n', Counter(graph.vs['degree']))
 
-    print('making community')
-    communities = graph.community_leiden(weights='weight')
+    logger.info('making communities')
+    communities = graph.community_leiden(weights='weight', resolution=1.2)
     graph.vs['community'] = communities.membership
 
-    print('filtering cells')
+    logger.info('filtering cells')
     anchored_communities, anchorless_communities = get_anchor_communities(graph)
     filter_anchorless(graph, anchorless_communities)
-    print(f'Number of communities with anchors: {len(anchored_communities)}')
-    print(f'Number of communities without anchors: {len(anchorless_communities)}')
+    logger.info('Number of communities with anchors: %d', len(anchored_communities))
+    logger.info('Number of communities without anchors: %d', len(anchorless_communities))
 
     community_freq = defaultdict(int)
     for community, freq in zip(graph.vs['community'], graph.vs['freq']):
         community_freq[community] += freq
-    print(len(community_freq))
     cutoff = find_supported_communities_cutoff(community_freq)
-    print(f'Cutoff threshold: {cutoff}')
+    logger.info('Cutoff threshold from knee plot of filtered community sizes: %d', cutoff)
+    knee_filter(graph, community_freq, cutoff)
 
     write_info(graph, '\nCOMMUNITY STATS\n')
-
     graph.write('graph_edges.ncol', weights='weight')
-    #pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']}).to_csv('node_attributes.tsv', sep='\t', index=False)
+    pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']}).to_csv('node_attributes.tsv', sep='\t', index=False)
     
 
-        

@@ -2,7 +2,9 @@ from collections import defaultdict
 from itertools import combinations
 import matplotlib.pyplot as plt
 import math
+import logging
 
+logger = logging.getLogger(__name__)
 TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 
 class TrieNode:
@@ -119,10 +121,15 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
         putatives (dict):       Putative barcode: frequency
         max_hamming_dist (int): Largest acceptable hamming distance.
     """
-    trie = TrieNode()
-    for barcode in anchors.keys():
-        insert(trie, barcode)
+    logger.info('Begin construction of edges')
 
+    logger.info('Creating anchor trie')
+    anchor_barcodes = set(anchors.keys())
+    trie = TrieNode()
+    for barcode in anchor_barcodes:
+        insert(trie, barcode)
+    
+    logger.info('Searching the putative barcodes in the anchor trie')
     edges = 0
     without_matches = 0
     with_matches = 0
@@ -131,7 +138,8 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     anchor_size_freq = defaultdict(int)
     non_anchor_barcodes = set()
     non_anchor_reads = set()
-    
+    anchor_reads = set()
+    processed = 0
     with open(".graph_edges", "w") as graph_edges:
         for putative_barcode, put_freq in putatives.items():
             matches = []
@@ -148,20 +156,21 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                 weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches) 
                 graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
 
-    with open('anchor_freq.csv', 'w') as sizes:
-        for key, value in anchors.items():
-            sizes.write(f'{key},{value}\n')
-        for anchor, putatives in anchor_candidates.items():
-            neighborhood_edges = calculate_anchor_neighborhoods(putatives)
-            for neighborhood_edge in neighborhood_edges:
-                graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
-                neighborhood_edge_count += 1
+            processed += 1
+            if processed % 500000 == 0:
+                logger.info('Queried %d putative barcodes', processed)
 
-    # development metrics
-    print(f'Number of anchor edges: {edges}')
-    print(f'Number of barcodes without associated edges: {without_matches}')
-    print(f'Number of barcodes with associated edges: {with_matches}')
-    print(f'Neighborhood edge count: {neighborhood_edge_count}')
+        #for anchor, putatives in anchor_candidates.items():
+        #    neighborhood_edges = calculate_anchor_neighborhoods(putatives)
+        #    for neighborhood_edge in neighborhood_edges:
+        #        graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
+        #        neighborhood_edge_count += 1
+
+    
+    logger.info('Number of anchor-putative edges: %d', edges)
+    logger.info('Number of barcodes without associated edges: %d', without_matches)
+    logger.info('Number of barcodes with associated edges: %d', with_matches)
+    logger.info('Neighborhood edge count: %d', neighborhood_edge_count)
 
     # find out how many reads are covered by the non-anchor nodes
     with open('.putative_barcodes', 'r') as infile:
@@ -169,13 +178,21 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
             row = line.strip().split('\t')
             if row[1] in non_anchor_barcodes:
                 non_anchor_reads.add(row[0])
-    print(f'Number of reads associated with non-anchor barcodes: {len(non_anchor_reads)}')
+    logger.info('Number of reads associated with non-anchor barcodes: %d', len(non_anchor_reads))
+
+    # find number of reads associated with anchor barcodes
+    with open('.anchors', 'r') as infile:
+        for line in infile:
+            row = line.strip().split('\t')
+            if row[1] in anchor_barcodes:
+                anchor_reads.add(row[0])
+    logger.info('Number of reads associated with anchor barcodes: %d', len(anchor_reads))
                 
     anchor_sizes = [len(x) for x in anchor_candidates.values()]
     for val in anchor_sizes:
         anchor_size_freq[val] += 1
-    print(anchor_size_freq)
     plt.hist(anchor_sizes)
     plt.savefig('anchor_sizes.png')
+    logger.info('The distrubition of the number of putative barcodes linked to an anchor barcode is saved to "anchor_sizes.png"')
 
 
