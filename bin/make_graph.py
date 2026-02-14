@@ -44,8 +44,8 @@ def find_supported_communities_cutoff(put_community_freq: dict[str, int]):
     plt.scatter(ranks[knee_index], cutoff_freq, s=80)
     plt.axvline(ranks[knee_index], linestyle='--')
     plt.axhline(cutoff_freq, linestyle='--')
-    plt.xscale('log')
-    plt.yscale('log')
+    #plt.xscale('log')
+    #plt.yscale('log')
     plt.xlabel('Barcode Rank')
     plt.ylabel('Read Count')
     plt.title('Anchor Barcode Knee Plot')
@@ -144,7 +144,15 @@ def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
     graph.vs['degree'] = graph.degree()
 
 
-def make_graph(put_anchor_freq, put_barcode_freq):
+def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagnostics: bool = False):
+    """Build graph, run Leiden, apply knee cutoff (scaled), and optionally write diagnostics.
+
+    Args:
+        put_anchor_freq (dict): anchor barcode -> read count
+        put_barcode_freq (dict): putative barcode -> read count
+        knee_scale (float): multiplier applied to the knee cutoff (use <1.0 to be less restrictive)
+        diagnostics (bool): when True, write `community_summary.tsv` and extra plots
+    """
     logger.info('making the graph')
     edges = []
     weights = []
@@ -167,28 +175,52 @@ def make_graph(put_anchor_freq, put_barcode_freq):
     logger.info('Number of anchor-anchor edges: %d', anchor_anchor_edges)
 
     add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
-    # degree distribution
-    # logger.info('The degree distribution of the graph is:\n', Counter(graph.vs['degree']))
 
     logger.info('making communities')
     communities = graph.community_leiden(weights='weight', resolution=1.2)
     graph.vs['community'] = communities.membership
 
-    logger.info('filtering cells')
     anchored_communities, anchorless_communities = get_anchor_communities(graph)
     filter_anchorless(graph, anchorless_communities)
     logger.info('Number of communities with anchors: %d', len(anchored_communities))
     logger.info('Number of communities without anchors: %d', len(anchorless_communities))
 
+    # compute per-community total reads
     community_freq = defaultdict(int)
     for community, freq in zip(graph.vs['community'], graph.vs['freq']):
         community_freq[community] += freq
+
+    # original knee cutoff (from existing algorithm)
     cutoff = find_supported_communities_cutoff(community_freq)
     logger.info('Cutoff threshold from knee plot of filtered community sizes: %d', cutoff)
-    knee_filter(graph, community_freq, cutoff)
+
+    # scale cutoff by user-provided multiplier (allows being less/more restrictive)
+    scaled_cutoff = max(1, int(round(cutoff * knee_scale)))
+    logger.info('Scaled cutoff (knee_scale=%0.2f): %d', knee_scale, scaled_cutoff)
+
+    # diagnostics: write community summary before filtering so you can inspect effect of cutoff
+    if diagnostics:
+        anchor_count = dict.fromkeys(set(graph.vs['community']), 0)
+        putative_count = defaultdict(int)
+        for community, node_type in zip(graph.vs['community'], graph.vs['type']):
+            if node_type == 'anchor':
+                anchor_count[community] += 1
+            else:
+                putative_count[community] += 1
+
+        df = pd.DataFrame({
+            'community': list(community_freq.keys()),
+            'total_reads': [community_freq[c] for c in community_freq.keys()],
+            'anchor_count': [anchor_count.get(c, 0) for c in community_freq.keys()],
+            'putative_count': [putative_count.get(c, 0) for c in community_freq.keys()],
+            'passes_scaled_cutoff': [community_freq[c] >= scaled_cutoff for c in community_freq.keys()]
+        })
+        df.sort_values('total_reads', ascending=False).to_csv('community_summary.tsv', sep='\t', index=False)
+        logger.info('Wrote community diagnostics to community_summary.tsv')
+
+    # apply scaled cutoff
+    knee_filter(graph, community_freq, scaled_cutoff)
 
     write_info(graph, '\nCOMMUNITY STATS\n')
     graph.write('graph_edges.ncol', weights='weight')
     pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']}).to_csv('node_attributes.tsv', sep='\t', index=False)
-    
-

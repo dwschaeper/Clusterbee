@@ -31,6 +31,12 @@ def parse_args():
     parser.add_argument('--max_dist', default=2, type=int,
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
 
+    # Controls how strict the knee cutoff is. Values < 1.0 are less restrictive (keep smaller communities).
+    parser.add_argument('--knee_scale', default=1.0, type=float,
+                        help='Multiplier applied to the knee cutoff (use <1.0 to be less restrictive).')
+    parser.add_argument('--diagnostics', action='store_true',
+                        help='Write community diagnostics (community_summary.tsv and extra plots).')
+
     args = parser.parse_args()
 
     return args
@@ -56,5 +62,5 @@ if __name__ == '__main__':
 
     construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist)
 
-    make_graph(putative_anchors, putative_barcodes)
+    make_graph(putative_anchors, putative_barcodes, knee_scale=arguments.knee_scale, diagnostics=arguments.diagnostics)
 
