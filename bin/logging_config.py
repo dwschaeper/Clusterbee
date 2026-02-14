@@ -4,7 +4,7 @@ import sys
 def setup_logging(level=logging.INFO, logfile=None):
     fmt = logging.Formatter("%(asctime)s|%(levelname)s| %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(logging.INFO)
 
     # console handler
     ch = logging.StreamHandler(sys.stdout)
@@ -16,3 +16,6 @@ def setup_logging(level=logging.INFO, logfile=None):
         fh = logging.FileHandler(logfile)
         fh.setLevel(logging.DEBUG)
         root.addHandler(fh)
+
+    # silence noisy libs
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
