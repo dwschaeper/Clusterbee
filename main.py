@@ -66,7 +66,6 @@ if __name__ == '__main__':
                      batch_size=arguments.batch_size
                      )
 
-    construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist)
+    construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist, arguments.barcode_len, processes=arguments.processes, batch_size=arguments.batch_size)
 
     make_graph(putative_anchors, putative_barcodes, knee_scale=arguments.knee_scale, diagnostics=arguments.diagnostics)
-
