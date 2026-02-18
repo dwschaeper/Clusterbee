@@ -34,6 +34,8 @@ def parse_args():
                         help='Number of reads per worker batch (default: 1000).')
     parser.add_argument('--max_dist', default=2, type=int,
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
+    parser.add_argument('--min_qual', default=15, type=int,
+                        help='The minimum average quality across a barcode for it to be considered.')
 
     # Controls how strict the knee cutoff is. Values < 1.0 are less restrictive (keep smaller communities).
     parser.add_argument('--knee_scale', default=1.0, type=float,
@@ -61,10 +63,15 @@ if __name__ == '__main__':
                      umi_len=arguments.umi_len,
                      polyt_buffer=arguments.polyt_buffer,
                      search_range=arguments.search_range,
+                     min_qual=arguments.min_qual,
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size
                      )
+
+    with open('.anchor_freqs', 'w') as out:
+        for key, value in putative_anchors.items():
+            out.write(f'{key},{value}\n')
 
     construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist, arguments.barcode_len, processes=arguments.processes, batch_size=arguments.batch_size)
 
