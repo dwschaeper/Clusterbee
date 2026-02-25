@@ -1,10 +1,10 @@
 import argparse
 import logging
 
-from bin.logging_config import setup_logging
-from bin.extract_barcodes import extract_barcodes
-from bin.edge_construction import construct_graph_edges
-from bin.make_graph import make_graph
+from src.logging_config import setup_logging
+from src.extract_barcodes import extract_barcodes
+from src.edge_construction import construct_graph_edges
+from src.make_graph import make_graph
 
 
 setup_logging(level=logging.INFO, logfile="GBBD.log")
@@ -36,6 +36,8 @@ def parse_args():
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
     parser.add_argument('--min_qual', default=15, type=int,
                         help='The minimum average quality across a barcode for it to be considered.')
+    parser.add_argument('--min_anchor_percentile', default=1,
+                        help='The percentile used to filter spurious anchors found during initial the search. By default, the anchors with exact matches in the bottom 1% are filtered as spurious.')
 
     # Controls how strict the knee cutoff is. Values < 1.0 are less restrictive (keep smaller communities).
     parser.add_argument('--knee_scale', default=1.0, type=float,
@@ -64,6 +66,7 @@ if __name__ == '__main__':
                      polyt_buffer=arguments.polyt_buffer,
                      search_range=arguments.search_range,
                      min_qual=arguments.min_qual,
+                     min_anchor_percentile=arguments.min_anchor_percentile,
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size

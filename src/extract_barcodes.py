@@ -1,5 +1,6 @@
 from Bio.SeqIO.QualityIO import FastqGeneralIterator
 from Bio.Seq import reverse_complement
+import numpy as np
 import gzip
 import regex
 from collections import defaultdict, Counter
@@ -121,9 +122,9 @@ class BarcodeBatchProcessor:
             if checker in self.whitelist:
                 anchor = checker
                 anchor_umi = umi
-            else:
-                putative_barcodes.append(checker)
-                putative_umis.append(umi)
+            # append all to the putative barcodes in case the anchor is filtered as spurious so no data loss
+            putative_barcodes.append(checker)
+            putative_umis.append(umi)
 
         return anchor, anchor_umi, putative_barcodes, putative_umis
 
@@ -212,21 +213,22 @@ def _safe_future_result(future):
         logger.exception('Worker task raised an exception (see traceback) — re-raising')
         raise
 
-def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_len: int, polyt_buffer: int, search_range: int, min_qual: int, whitelist: set=None, processes: int=None, batch_size: int=10000):
+def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_len: int, polyt_buffer: int, search_range: int, min_qual: int, min_anchor_percentile: int, whitelist: set=None, processes: int=None, batch_size: int=10000):
     """
     Given a fastq file, extract all the barcodes.
 
     Args:
-        fastq (str):            The path to the fastq file
-        polyt_min_length (int): The minimum size required for a polyT(A) to be identified in the read
-        barcode_len (int):      The length of the cell barcode sequenceS
-        umi_len (int):          The length of the UMI used
-        polyt_buffer (int):     How many bases of the polyT to include when searching for UMI/barcode in case the sequence ends in T
-        search_range (int):     The range around the UMI length to look for exact matches
-        min_qual (int):         The minimum average quality in a barcode for it to be considered
-        whitelist (set):        The whitelist of cell barcodes that are expected as a set for quick accession
-        processes (int):        Number of worker processes (defaults to cpu_count() - 1).
-        batch_size (int):       Number of reads per worker task (default 1000).
+        fastq (str):                 The path to the fastq file
+        polyt_min_length (int):      The minimum size required for a polyT(A) to be identified in the read
+        barcode_len (int):           The length of the cell barcode sequenceS
+        umi_len (int):               The length of the UMI used
+        polyt_buffer (int):          How many bases of the polyT to include when searching for UMI/barcode in case the sequence ends in T
+        search_range (int):          The range around the UMI length to look for exact matches
+        min_qual (int):              The minimum average quality in a barcode for it to be considered
+        min_anchor_percentile (int): The minimum number of exact matches an anchor requires to be kept
+        whitelist (set):             The whitelist of cell barcodes that are expected as a set for quick accession
+        processes (int):             Number of worker processes (defaults to cpu_count() - 1)
+        batch_size (int):            Number of reads per worker task (default 1000)
 
     Returns:
         defaultdict: anchor barcode: frequency
@@ -307,6 +309,13 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                 processed += local_processed
                 if processed % 500000 == 0:
                     logger.info('Extracted barcodes from %d reads', processed)
+
+    # filter putative anchors to remove spurious matches
+    anchor_freq_sizes = set(putative_anchors_freq.values())
+    cut = np.floor(np.percentile(list(anchor_freq_sizes), min_anchor_percentile))
+    logger.info('The minimum number of exact anchors matches required is %d calculated as the %d percentile of the anchor frequncy set.', cut, min_anchor_percentile)
+    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
+        
 
     logger.info('polyA read+ reads found: %d', polya_found_reads)
     logger.info('Reads with putative anchors: %d', reads_with_putative_anchor_count)

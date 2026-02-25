@@ -237,6 +237,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     non_anchor_reads = set()
     anchor_reads = set()
     processed = 0
+    multi_match = defaultdict(int)
 
     max_workers = processes if processes and processes > 0 else max(1, (os.cpu_count() or 2) - 1)
 
@@ -265,13 +266,14 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                         without_matches += 1
                     else:
                         with_matches += 1
+                        multi_match[len(matches)] += 1
                     for anchor_barcode, mismatches in matches:
                         edges += 1
                         anchor_candidates[anchor_barcode].append((putative_barcode, encoded, put_freq))
                         if mismatches != 0:  # don't make an edge between putative anchor and itself
                             non_anchor_barcodes.add(putative_barcode)
-                        weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
-                        graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
+                            weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
+                            graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
 
                     processed += 1
                     if processed % 500000 == 0:
@@ -287,13 +289,14 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                     without_matches += 1
                 else:
                     with_matches += 1
+                    multi_match[len(matches)] += 1
                 for anchor_barcode, mismatches in matches:
                     edges += 1
                     anchor_candidates[anchor_barcode].append((putative_barcode, encoded, put_freq))
                     if mismatches != 0:  # don't make an edge between putative anchor and itself
                         non_anchor_barcodes.add(putative_barcode)
-                    weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
-                    graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
+                        weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
+                        graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
 
                 processed += 1
                 if processed % 500000 == 0:
@@ -309,6 +312,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     logger.info('Number of barcodes without associated edges: %d', without_matches)
     logger.info('Number of barcodes with associated edges: %d', with_matches)
     logger.info('Neighborhood edge count: %d', neighborhood_edge_count)
+    logger.info('Distribution of putatives that match multiple anchors %s', str(multi_match))
 
     # find out how many reads are covered by the non-anchor nodes
     with open('.putative_barcodes', 'r') as infile:
