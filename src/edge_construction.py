@@ -302,11 +302,11 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                 if processed % 500000 == 0:
                     logger.info('Queried %d putative barcodes', processed)
 
-    #for anchor, putatives in anchor_candidates.items():
-    #    neighborhood_edges = calculate_anchor_neighborhoods(putatives)
-    #    for neighborhood_edge in neighborhood_edges:
-    #        graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
-    #        neighborhood_edge_count += 1
+        for anchor, putatives in anchor_candidates.items():
+            neighborhood_edges = calculate_anchor_neighborhoods(putatives)
+            for neighborhood_edge in neighborhood_edges:
+                graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
+                neighborhood_edge_count += 1
 
     logger.info('Number of anchor-putative edges: %d', edges)
     logger.info('Number of barcodes without associated edges: %d', without_matches)
