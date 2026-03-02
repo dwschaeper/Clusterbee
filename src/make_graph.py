@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 def plot_knee(put_community_freq: dict[str, int]):
     """
     Finds realistic communities from the set of communities.
+    Calculates knee on non-log (linear) scale.
 
     Args:
         put_community_freq (dict): A dict of all the communities: freq
@@ -18,34 +19,41 @@ def plot_knee(put_community_freq: dict[str, int]):
     Returns:
         int: cutoff to use for community freq
     """
-    freqs = np.array(sorted(put_community_freq.values(), reverse=True))
-    ranks = np.arange(1, len(freqs) + 1)
+    freqs = np.array(sorted(put_community_freq.values(), reverse=True), dtype=float)
+    ranks = np.arange(1, len(freqs) + 1, dtype=float)
 
-    # get line from highest to lowest
-    #log_ranks = np.log10(ranks)
-    #log_freqs = np.log10(freqs)
-    #start_points = np.array([log_ranks[0], log_freqs[0]])
-    #end_points = np.array([log_ranks[-1], log_freqs[-1]])
-    #line_vector = end_points - start_points
-    #line_unit = line_vector / np.linalg.norm(line_vector)
+    if len(freqs) == 0:
+        return 0
+    if len(freqs) < 3:
+        return int(freqs[0])
+
+    # Calculate knee using linear space (non-log)
+    start_points = np.array([ranks[0], freqs[0]], dtype=float)
+    end_points = np.array([ranks[-1], freqs[-1]], dtype=float)
+    line_vector = end_points - start_points
+    norm = np.linalg.norm(line_vector)
     
-    # calculate cutoff
-    #points = np.column_stack((log_ranks, log_freqs))
-    #point_vectors = points - start_points
-    #projection_lengths = np.dot(point_vectors, line_unit)
-    #projected_points = np.outer(projection_lengths, line_unit) + start_points
-    #distances = np.linalg.norm(points - projected_points, axis=1)
-    #knee_index = np.argmax(distances)
-    #cutoff_freq = freqs[knee_index]
+    if norm == 0.0:
+        knee_index = 0
+    else:
+        line_unit = line_vector / norm
+        points = np.column_stack((ranks, freqs))
+        point_vectors = points - start_points
+        projection_lengths = np.dot(point_vectors, line_unit)
+        projected_points = np.outer(projection_lengths, line_unit) + start_points
+        distances = np.linalg.norm(points - projected_points, axis=1)
+        knee_index = int(np.argmax(distances))
+    
+    cutoff_freq = int(freqs[knee_index])
 
     # plot
     plt.figure(figsize=(6,5))
     plt.plot(ranks, freqs)
-    #plt.scatter(ranks[knee_index], cutoff_freq, s=80)
-    #plt.axvline(ranks[knee_index], linestyle='--')
-    #plt.axhline(cutoff_freq, linestyle='--')
-    #plt.xscale('log')
-    #plt.yscale('log')
+    plt.scatter(ranks[knee_index], cutoff_freq, s=80)
+    plt.axvline(ranks[knee_index], linestyle='--')
+    plt.axhline(cutoff_freq, linestyle='--')
+    plt.xscale('log')
+    plt.yscale('log')
     plt.xlabel('Barcode Rank')
     plt.ylabel('Read Count')
     plt.title('Anchor Barcode Knee Plot')
@@ -53,7 +61,8 @@ def plot_knee(put_community_freq: dict[str, int]):
     plt.savefig('anchor_barcode_knee_plot.png')
     plt.close()
 
-    #return cutoff_freq
+    return cutoff_freq
+
 
 
 def filter_anchorless(graph, anchorless):
@@ -196,8 +205,7 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
                 out.write(f'{name},{community},{community_freq[community]}\n')
 
     # original knee cutoff (from existing algorithm)
-    plot_knee(community_freq)
-    cutoff = 60
+    cutoff = plot_knee(community_freq)
     logger.info('Cutoff threshold from knee plot of filtered community sizes: %d', cutoff)
 
     # scale cutoff by user-provided multiplier (allows being less/more restrictive)
