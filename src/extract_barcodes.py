@@ -262,7 +262,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                     batch = []
 
                 # keep pending futures bounded and flush completed ones
-                if len(pending) >= max_workers * 2:
+                if len(pending) >= max_workers * 3:
                     done_future = next(as_completed(pending))
                     pending.remove(done_future)
                     res = _safe_future_result(done_future)

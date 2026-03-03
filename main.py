@@ -5,6 +5,7 @@ from src.logging_config import setup_logging
 from src.extract_barcodes import extract_barcodes
 from src.edge_construction import construct_graph_edges
 from src.make_graph import make_graph
+from src.reads_to_cells import assignment
 
 
 setup_logging(level=logging.INFO, logfile="GBBD.log")
@@ -78,4 +79,6 @@ if __name__ == '__main__':
 
     construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist, arguments.barcode_len, processes=arguments.processes, batch_size=arguments.batch_size)
 
-    make_graph(putative_anchors, putative_barcodes, knee_scale=arguments.knee_scale, diagnostics=arguments.diagnostics)
+    graph_data = make_graph(putative_anchors, putative_barcodes, knee_scale=arguments.knee_scale, diagnostics=arguments.diagnostics)
+
+    assignment(graph_data)

@@ -233,8 +233,14 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
         logger.info('Wrote community diagnostics to community_summary.tsv')
 
     # apply scaled cutoff
-    # knee_filter(graph, community_freq, scaled_cutoff)
+    knee_filter(graph, community_freq, scaled_cutoff)
 
     write_info(graph, '\nCOMMUNITY STATS\n')
     graph.write('graph_edges.ncol', weights='weight')
-    pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']}).to_csv('node_attributes.tsv', sep='\t', index=False)
+
+    # store graph data
+    graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
+    graph_data.to_csv('node_attributes.tsv', sep='\t', index=False)
+
+    return graph_data
+
