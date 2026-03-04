@@ -114,10 +114,11 @@ class BarcodeBatchProcessor:
 
         for i in range(lower_search, upper_search):
             checker = upstream_tail[i:i + self.barcode_len]
+            checker_qual = upstream_qual[i:i + self.barcode_len]
             umi = upstream_tail[i + self.barcode_len:i + self.barcode_len + self.umi_len]
-            if self._avg_qual(upstream_qual) < self.min_qual:
-                continue
             if len(checker) != self.barcode_len:
+                continue
+            if self._avg_qual(checker_qual) < self.min_qual:
                 continue
             if checker in self.whitelist:
                 anchor = checker
