@@ -69,11 +69,20 @@ class TrieBatchProcessor:
             matches = []
             # use the instance method (DFS owns max_hamming_dist)
             self._depth_first_search(self.trie, putative_barcode, 0, 0, matches)
+            hits = []
             if matches:
+                # take best match, or all those tied for it
+                min_dist = 10
+                for match in matches:
+                    if match[1] < min_dist:
+                        hits = [match]
+                        min_dist = match[1]
+                    elif match[1] == min_dist:
+                        hits.append(match)
                 encoded = self._encode(putative_barcode)
             else:
                 encoded = None
-            local_out.append((putative_barcode, put_freq, encoded, matches))
+            local_out.append((putative_barcode, put_freq, encoded, hits))
         return local_out
 
     def _depth_first_search(self, node: TrieNode, putative_barcode: str, pos: int, mismatches: int, results: list):
