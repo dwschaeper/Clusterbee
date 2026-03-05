@@ -94,8 +94,8 @@ class BarcodeBatchProcessor:
         """
         putative_barcodes = []
         putative_umis = []
-        lower_search = len(upstream_tail) - self.umi_len - self.search_range - self.barcode_len
-        upper_search = len(upstream_tail) - self.umi_len + self.search_range + self.polyt_buffer - self.barcode_len + 1  # adjust for 0-based indexing
+        lower_search = len(upstream_tail) - self.umi_len - (2 * self.search_range) - (2 * self.polyt_buffer) - self.barcode_len
+        upper_search = len(upstream_tail) - self.umi_len - self.barcode_len - 1  # adjust for 0-based indexing
 
         for i in range(lower_search, upper_search):
             checker = upstream_tail[i:i + self.barcode_len]
@@ -103,7 +103,7 @@ class BarcodeBatchProcessor:
             umi = upstream_tail[i + self.barcode_len:i + self.barcode_len + self.umi_len]
             if len(checker) != self.barcode_len:
                 continue
-            if self._avg_qual(checker_qual) < self.min_qual:
+            if self._avg_qual(checker_qual) <= self.min_qual:
                 continue
             putative_barcodes.append(checker)
             putative_umis.append(umi)
@@ -129,13 +129,13 @@ class BarcodeBatchProcessor:
 
         if forward:
             polyt_start = sequence.find(forward[0])
-            upstream_tail = sequence[:polyt_start + self.polyt_buffer]  # include some of the polyT in case barcode/UMI ends in T
-            upstream_qual = qual[:polyt_start + self.polyt_buffer]
+            upstream_tail = sequence[:polyt_start + self.search_range + self.polyt_buffer]  # include some of the polyT in case barcode/UMI ends in T
+            upstream_qual = qual[:polyt_start + self.search_range + self.polyt_buffer]
 
         elif reverse:
             polyt_start = reverse_seq.find(reverse[0])
-            upstream_tail = reverse_seq[:polyt_start + self.polyt_buffer]  # include some of the polyT in case barcode/UMI ends in T
-            upstream_qual = reverse_qual[:polyt_start + self.polyt_buffer]
+            upstream_tail = reverse_seq[:polyt_start + self.search_range + self.polyt_buffer]  # include some of the polyT in case barcode/UMI ends in T
+            upstream_qual = reverse_qual[:polyt_start + self.search_range + self.polyt_buffer]
 
         else:
             upstream_tail = None
@@ -253,7 +253,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                     local_anchor_reads = set()
                     for line in putative_lines:
                         putative_set_file.write(line)
-                        read_id, barcode, _ = line.strip().split('\t')
+                        read_id, barcode, _ = line.rstrip('\n').split('\t')
                         if barcode in whitelist:
                             anchor_set_file.write(line)
                             local_anchor_reads.add(read_id)
@@ -284,7 +284,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                 local_anchor_reads = set()
                 for line in putative_lines:
                     putative_set_file.write(line)
-                    read_id, barcode, _ = line.strip().split('\t')
+                    read_id, barcode, _ = line.rstrip('\n').split('\t')
                     if barcode in whitelist:
                         anchor_set_file.write(line)
                         local_anchor_reads.add(read_id)
