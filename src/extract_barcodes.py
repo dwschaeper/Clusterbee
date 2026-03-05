@@ -18,7 +18,7 @@ class BarcodeBatchProcessor:
     Worker class that processes batches of FastQ records.
     """
 
-    def __init__(self, polyt_min_length: int, barcode_len: int, umi_len: int, polyt_buffer: int, search_range: int, min_qual: int, whitelist: set):
+    def __init__(self, polyt_min_length: int, barcode_len: int, umi_len: int, polyt_buffer: int, search_range: int, min_qual: int):
         """
         Initialize the processor with parameters for barcode extraction.
 
@@ -29,14 +29,12 @@ class BarcodeBatchProcessor:
             polyt_buffer (int):     How many bases of the polyT to include when searching for UMI/barcode in case the sequence ends in T
             search_range (int):     The range around the UMI length to look for exact matches
             min_qual (int):         The minimum average quality in a barcode for it to be considered
-            whitelist (set):        The whitelist of cell barcodes
         """
         self.barcode_len = barcode_len
         self.umi_len = umi_len
         self.polyt_buffer = polyt_buffer
         self.search_range = search_range
         self.min_qual = min_qual
-        self.whitelist = whitelist
         self.polyt_pattern = f'TTTT(?:T{{{polyt_min_length - 4},}}){{e<=1}}'
 
     def process(self, records_batch):
@@ -47,39 +45,28 @@ class BarcodeBatchProcessor:
             records_batch (list): A list of tuples (title, sequence) for each read in the batch.
 
         Returns:
-            list: Lines for putative anchors to write to file
             list: Lines for putative barcodes to write to file
-            Counter: Frequency of each putative anchor barcode in the batch
             Counter: Frequency of each putative barcode in the batch
             int: Number of reads with polyA found in the batch
-            int: Number of reads with putative anchors found in the batch
             int: Total number of reads processed in the batch
         """
-        local_anchor_lines = []
         local_putative_lines = []
-        local_anchor_freq = Counter()
         local_putative_freq = Counter()
         local_polya = 0
-        local_reads_with_anchor = 0
         local_processed = 0
 
         for record in records_batch:
             upstream_tail, upstream_qual = self._find_upstream(record[1], record[2])
             if upstream_tail is not None:
                 local_polya += 1
-                anchor, anchor_umi, putative_barcodes, putative_umis = self._whitelist_match(upstream_tail, upstream_qual)
-                if anchor:
-                    local_anchor_lines.append(f'{record[0]}\t{anchor}\t{anchor_umi}\n')
-                    local_anchor_freq[anchor] += 1
-                    local_reads_with_anchor += 1
+                putative_barcodes, putative_umis = self._extract_putatives(upstream_tail, upstream_qual)
 
                 for barcode, umi in zip(putative_barcodes, putative_umis):
                     local_putative_lines.append(f'{record[0]}\t{barcode}\t{umi}\n')
                     local_putative_freq[barcode] += 1
             local_processed += 1
 
-        return (local_anchor_lines, local_putative_lines, local_anchor_freq, local_putative_freq,
-                local_polya, local_reads_with_anchor, local_processed)
+        return local_putative_lines, local_putative_freq, local_polya, local_processed
     
     def _avg_qual(self, qual_str: str):
         """
@@ -96,17 +83,15 @@ class BarcodeBatchProcessor:
             total += ord(qchar) - 33
         return total / len(qual_str)
     
-    def _whitelist_match(self, upstream_tail: str, upstream_qual: str):
-        """Identify exact barcode matches using the instance whitelist and search parameters.
+    def _extract_putatives(self, upstream_tail: str, upstream_qual: str):
+        """Collect all putative barcode/UMI pairs using search and quality filters.
 
         Args:
             upstream_tail (str): The sequence segment upstream of the polyT to search.
 
         Returns:
-            tuple: (anchor (str|None), anchor_umi (str|None), putative_barcodes (list), putative_umis (list))
+            tuple: (putative_barcodes (list), putative_umis (list))
         """
-        anchor = None
-        anchor_umi = None
         putative_barcodes = []
         putative_umis = []
         lower_search = len(upstream_tail) - self.umi_len - self.search_range - self.barcode_len
@@ -120,14 +105,10 @@ class BarcodeBatchProcessor:
                 continue
             if self._avg_qual(checker_qual) < self.min_qual:
                 continue
-            if checker in self.whitelist:
-                anchor = checker
-                anchor_umi = umi
-            # append all to the putative barcodes in case the anchor is filtered as spurious so no data loss
             putative_barcodes.append(checker)
             putative_umis.append(umi)
 
-        return anchor, anchor_umi, putative_barcodes, putative_umis
+        return putative_barcodes, putative_umis
 
     def _find_upstream(self, sequence: str, qual: str):
         """Return the subsequence upstream of the polyT using the processor's pattern and buffer.
@@ -163,7 +144,7 @@ class BarcodeBatchProcessor:
         return upstream_tail, upstream_qual
 
 
-def _worker_init(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_range, min_qual, whitelist):
+def _worker_init(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_range, min_qual):
     """
     Initializer executed in each worker process to set up a local processor.
     Using an initializer avoids pickling large shared objects per-task
@@ -175,10 +156,9 @@ def _worker_init(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_ra
         polyt_buffer (int):     How many bases of the polyT to include when searching for UMI/barcode in case the sequence ends in T
         search_range (int):     The range around the UMI length to look for exact matches
         min_qual (int):         The minimum average quality in a barcode for it to be considered
-        whitelist (set):        The whitelist of cell barcodes
     """
     global _worker_processor
-    _worker_processor = BarcodeBatchProcessor(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_range, min_qual, whitelist)
+    _worker_processor = BarcodeBatchProcessor(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_range, min_qual)
 
 
 def _worker_process_batch(records_batch):
@@ -189,12 +169,9 @@ def _worker_process_batch(records_batch):
         records_batch (list): A list of tuples (title, sequence, qual) for each read in the batch.
 
     Returns:
-        list: Lines for putative anchors to write to file
         list: Lines for putative barcodes to write to file
-        Counter: Frequency of each putative anchor barcode in the batch
         Counter: Frequency of each putative barcode in the batch
         int: Number of reads with polyA found in the batch
-        int: Number of reads with putative anchors found in the batch
         int: Total number of reads processed in the batch
     """
     if _worker_processor is None:
@@ -248,9 +225,13 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     # stream through fastq file and submit batches to worker processes (decompression/streaming stays in main process)
     reader = gzip.open(fastq, 'rt') if fastq.endswith('gz') else open(fastq, 'rt')
 
+    # track reads with multiple anchors
+    reads_with_anchors = set()
+    reads_with_multiple_anchors = 0
+
     # start a process pool — use an initializer so each worker creates its own BarcodeBatchProcessor
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
-                                      initargs=(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_range, min_qual, whitelist))
+                                      initargs=(polyt_min_length, barcode_len, umi_len, polyt_buffer, search_range, min_qual))
 
     with open('.putative_barcodes', 'w') as putative_set_file, open('.anchors', 'w') as anchor_set_file, executor_cm as executor:
         pending = []
@@ -267,20 +248,25 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                     done_future = next(as_completed(pending))
                     pending.remove(done_future)
                     res = _safe_future_result(done_future)
-                    (anchor_lines, putative_lines, anchor_cnt, putative_cnt,
-                     local_polya, local_reads_anchor, local_processed) = res
+                    putative_lines, putative_cnt, local_polya, local_processed = res
 
-                    for line in anchor_lines:
-                        anchor_set_file.write(line)
+                    local_anchor_reads = set()
                     for line in putative_lines:
                         putative_set_file.write(line)
-                    for k, v in anchor_cnt.items():
-                        putative_anchors_freq[k] += v
+                        read_id, barcode, _ = line.strip().split('\t')
+                        if barcode in whitelist:
+                            anchor_set_file.write(line)
+                            local_anchor_reads.add(read_id)
+                            if read_id in reads_with_anchors:
+                                reads_with_multiple_anchors += 1
+                            reads_with_anchors.add(read_id)
                     for k, v in putative_cnt.items():
                         putative_barcodes_freq[k] += v
+                        if k in whitelist:
+                            putative_anchors_freq[k] += v
 
                     polya_found_reads += local_polya
-                    reads_with_putative_anchor_count += local_reads_anchor
+                    reads_with_putative_anchor_count += len(local_anchor_reads)
                     processed += local_processed
                     if processed % 500000 == 0:
                         logger.info('Extracted barcodes from %d reads', processed)
@@ -293,20 +279,25 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
             for future in as_completed(pending):
                 res = _safe_future_result(future)
 
-                (anchor_lines, putative_lines, anchor_cnt, putative_cnt,
-                 local_polya, local_reads_anchor, local_processed) = res
+                putative_lines, putative_cnt, local_polya, local_processed = res
 
-                for line in anchor_lines:
-                    anchor_set_file.write(line)
+                local_anchor_reads = set()
                 for line in putative_lines:
                     putative_set_file.write(line)
-                for k, v in anchor_cnt.items():
-                    putative_anchors_freq[k] += v
+                    read_id, barcode, _ = line.strip().split('\t')
+                    if barcode in whitelist:
+                        anchor_set_file.write(line)
+                        local_anchor_reads.add(read_id)
+                        if read_id in reads_with_anchors:
+                            reads_with_multiple_anchors += 1
+                        reads_with_anchors.add(read_id)
                 for k, v in putative_cnt.items():
                     putative_barcodes_freq[k] += v
+                    if k in whitelist:
+                        putative_anchors_freq[k] += v
 
                 polya_found_reads += local_polya
-                reads_with_putative_anchor_count += local_reads_anchor
+                reads_with_putative_anchor_count += len(local_anchor_reads)
                 processed += local_processed
                 if processed % 500000 == 0:
                     logger.info('Extracted barcodes from %d reads', processed)
@@ -316,10 +307,10 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     cut = np.floor(np.percentile(list(anchor_freq_sizes), min_anchor_percentile))
     logger.info('The minimum number of exact anchors matches required is %d calculated as the %d percentile of the anchor frequncy set.', cut, min_anchor_percentile)
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
-        
 
     logger.info('polyA read+ reads found: %d', polya_found_reads)
     logger.info('Reads with putative anchors: %d', reads_with_putative_anchor_count)
+    logger.info('Reads with multiple anchors: %d', reads_with_multiple_anchors)
     logger.info('Reads with polyA but no anchor: %d', polya_found_reads - reads_with_putative_anchor_count)
     logger.info('Number of putative anchor barcodes: %d', len(putative_anchors_freq))
     logger.info('Number of putative barcodes: %d', len(putative_barcodes_freq))
