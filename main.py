@@ -3,7 +3,7 @@ import logging
 
 from src.logging_config import setup_logging
 from src.extract_barcodes import extract_barcodes
-from src.edge_construction import construct_graph_edges
+from src.edge_construction_read_linkage import construct_graph_edges
 from src.make_graph import make_graph
 from src.reads_to_cells import assignment
 
@@ -37,8 +37,10 @@ def parse_args():
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
     parser.add_argument('--min_qual', default=15, type=int,
                         help='The minimum average quality across a barcode for it to be considered.')
-    parser.add_argument('--min_anchor_percentile', default=1,
+    parser.add_argument('--min_anchor_percentile', default=2,
                         help='The percentile used to filter spurious anchors found during initial the search. By default, the anchors with exact matches in the bottom 1% are filtered as spurious.')
+    parser.add_argument('--exact_anchor', default=False,
+                        help='Whether or not to enforce anchors must be one per read and at the exact position as expected')
 
     # Controls how strict the knee cutoff is. Values < 1.0 are less restrictive (keep smaller communities).
     parser.add_argument('--knee_scale', default=1.0, type=float,
@@ -68,6 +70,7 @@ if __name__ == '__main__':
                      search_range=arguments.search_range,
                      min_qual=arguments.min_qual,
                      min_anchor_percentile=arguments.min_anchor_percentile,
+                     exact_anchor = arguments.exact_anchor,
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size
@@ -76,7 +79,7 @@ if __name__ == '__main__':
     with open('.anchor_freqs', 'w') as out:
         for key, value in putative_anchors.items():
             out.write(f'{key},{value}\n')
-
+    exit(1)
     construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist, arguments.barcode_len, processes=arguments.processes, batch_size=arguments.batch_size)
 
     graph_data = make_graph(putative_anchors, putative_barcodes, knee_scale=arguments.knee_scale, diagnostics=arguments.diagnostics)
