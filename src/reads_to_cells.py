@@ -55,23 +55,21 @@ def assignment(graph_data):
                         multi_reads += 1
                     used_reads.add(read)
 
-                #cell_sizes[barcode] += 1
-                #cell_membership[barcode].append(read)
-                #if read in used_reads:
-                #    multi_reads += 1
-                #used_reads.add(read)
-
         logger.info('Number of multi-assigned reads: %d', multi_reads)
         
         # write out the data
+        cell_membership_f.write('community\treads\n')
         for key, value in cell_membership.items():
             cell_membership_f.write(f'{key}\t{" ".join(value)}\n')
 
+        cell_sizes_f.write('community\tsize\n')
         for key, value in cell_sizes.items():
             cell_sizes_f.write(f'{key}\t{value}\n')
 
+        read_community_f.write('read\tcommunity1\tcommunity2\n')
         for key, value in read_community.items():
             if len(value) > 1:
-                read_community_f.write(f'{key}\t{value}\n')
+                comm_string = "\t".join(sorted(list(value)))
+                read_community_f.write(f'{key}\t{comm_string}\n')
 
 
