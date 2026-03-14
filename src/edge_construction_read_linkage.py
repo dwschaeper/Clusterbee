@@ -84,7 +84,7 @@ class TrieBatchProcessor:
                 encoded = self._encode(putative_barcode)
             else:
                 encoded = None
-            local_out.append((putative_barcode, put_freq, encoded, hits))
+            local_out.append((putative_barcode, put_freq, encoded, matches))
         return local_out
 
     def _depth_first_search(self, node: TrieNode, putative_barcode: str, pos: int, mismatches: int, results: list):
@@ -216,8 +216,8 @@ def calculate_anchor_neighborhoods(putative_barcodes):
     edges = []
     for (barcode1, encoded1, freq1), (barcode2, encoded2, freq2) in combinations(putative_barcodes, 2):
         dist = hamming(encoded1, encoded2)
-        weight = (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
-        #weight = math.sqrt((freq1 * freq2)) * (2 ** -dist)
+        #weight = (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
+        weight = math.sqrt((freq1 * freq2)) * (2 ** -dist)
         edges.append((barcode1, barcode2, weight))
 
     return edges
@@ -239,7 +239,10 @@ def build_read_linkage_weights(used_barcodes: set[str], barcode_to_anchor: dict[
         dict[str, list[tuple[str, int, int]]]: anchor -> [(barcode, encoded, freq), ...] tuples ready to add to neighborhood.
     """
     read_to_barcodes = defaultdict(set)
-    pair_counts = defaultdict(int)
+    multi_barcode_anchors = defaultdict(list)
+    results_by_anchor = defaultdict(list)
+    encoded_cache = {}
+    read_track = 0 
 
     with open('.putative_barcodes', 'r') as infile:
         for line in infile:
@@ -248,40 +251,39 @@ def build_read_linkage_weights(used_barcodes: set[str], barcode_to_anchor: dict[
             if barcode in used_barcodes:
                 read_to_barcodes[read_id].add(barcode)
 
+
     for barcodes in read_to_barcodes.values():
+        read_track += 1
+        read_anchors = []
+        read_barcodes = []
         for barcode1, barcode2 in combinations(sorted(barcodes), 2):
-            pair_counts[(barcode1, barcode2)] += 1
+            # Organize results by anchor with actual frequencies and encoded values.
+            # Only cross-anchor pairs are returned because same-anchor links are already
+            # represented within each anchor neighborhood.
+            anchor1 = barcode_to_anchor.get(barcode1)
+            anchor2 = barcode_to_anchor.get(barcode2)
 
-    # Organize results by anchor with actual frequencies and encoded values.
-    # Only cross-anchor pairs are returned because same-anchor links are already
-    # represented within each anchor neighborhood.
-    results_by_anchor = defaultdict(list)
-    encoded_cache = {}
-    for (barcode1, barcode2), _co_occurrence_count in pair_counts.items():
-        anchor1 = barcode_to_anchor.get(barcode1)
-        anchor2 = barcode_to_anchor.get(barcode2)
+            if anchor1 == anchor2:
+                continue
         
-        if not anchor1 or not anchor2:
-            continue  # Skip if barcode anchor mapping not found
+            # Get actual frequencies
+            freq1 = anchors.get(barcode1, putatives.get(barcode1, 1))
+            freq2 = anchors.get(barcode2, putatives.get(barcode2, 1))
+        
+            # Encode each barcode once.
+            if barcode1 not in encoded_cache:
+                encoded_cache[barcode1] = encode_barcode(barcode1)
+            if barcode2 not in encoded_cache:
+                encoded_cache[barcode2] = encode_barcode(barcode2)
+            encoded1 = encoded_cache[barcode1]
+            encoded2 = encoded_cache[barcode2]
+        
+            # Return tuples organized by anchor where they need to be added (barcode, encoded, freq)
+            results_by_anchor[anchor1].append(((barcode2, encoded2, freq2), anchor2))
+            results_by_anchor[anchor2].append(((barcode1, encoded1, freq1), anchor1))
 
-        if anchor1 == anchor2:
-            continue
-        
-        # Get actual frequencies
-        freq1 = anchors.get(barcode1, putatives.get(barcode1, 1))
-        freq2 = anchors.get(barcode2, putatives.get(barcode2, 1))
-        
-        # Encode each barcode once.
-        if barcode1 not in encoded_cache:
-            encoded_cache[barcode1] = encode_barcode(barcode1)
-        if barcode2 not in encoded_cache:
-            encoded_cache[barcode2] = encode_barcode(barcode2)
-        encoded1 = encoded_cache[barcode1]
-        encoded2 = encoded_cache[barcode2]
-        
-        # Return tuples organized by anchor where they need to be added (barcode, encoded, freq)
-        results_by_anchor[anchor1].append((barcode2, encoded2, freq2))
-        results_by_anchor[anchor2].append((barcode1, encoded1, freq1))
+            read_anchors.extend([anchor1, anchor2])
+            read_barcodes.extend([barcode1, barcode2])
 
     return results_by_anchor
 
@@ -304,22 +306,35 @@ def consume_results_batch(results_batch, anchors: dict[str, int], multi_match, n
             multi_match[len(matches)] += 1
             max_freq_match = (0, '', '', 0.0)
             for anchor_barcode, mismatches in matches:
-                if anchors[anchor_barcode] > max_freq_match[0]:
-                    weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
-                    max_freq_match = (anchors[anchor_barcode], anchor_barcode, putative_barcode, weight)
+                weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                non_anchor_barcodes.add(putative_barcode)
+                edge = canonical_edge(anchor_barcode, putative_barcode)
+                edge_weights[edge] += weight
+                used_barcodes.add(anchor_barcode)
+                used_barcodes.add(putative_barcode)
+                barcode_to_anchor[putative_barcode] = anchor_barcode
+                barcode_to_anchor[anchor_barcode] = anchor_barcode
+                edges += 1
+                anchor_neighborhood[anchor_barcode].add((putative_barcode, encoded, put_freq))
+
+                # holding on to keep best match chunk
+                #if anchors[anchor_barcode] > max_freq_match[0]:
+                #    weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
+                #    weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                #    max_freq_match = (anchors[anchor_barcode], anchor_barcode, putative_barcode, weight)
 
             # keep the highest-frequency anchor among tied best-distance matches
-            if max_freq_match[0] != 0:
-                _anchor_freq, anchor, putative, weight = max_freq_match
-                non_anchor_barcodes.add(putative)
-                edge = canonical_edge(anchor, putative)
-                edge_weights[edge] += weight
-                used_barcodes.add(anchor)
-                used_barcodes.add(putative)
-                barcode_to_anchor[putative] = anchor
-                barcode_to_anchor[anchor] = anchor
-                edges += 1
-                anchor_neighborhood[anchor].add((putative, encoded, put_freq))
+            #if max_freq_match[0] != 0:
+            #    _anchor_freq, anchor, putative, weight = max_freq_match
+            #    non_anchor_barcodes.add(putative)
+            #    edge = canonical_edge(anchor, putative)
+            #    edge_weights[edge] += weight
+            #    used_barcodes.add(anchor)
+            #    used_barcodes.add(putative)
+            #    barcode_to_anchor[putative] = anchor
+            #    barcode_to_anchor[anchor] = anchor
+            #    edges += 1
+            #    anchor_neighborhood[anchor].add((putative, encoded, put_freq))
 
         processed += 1
         if processed % 500000 == 0:
@@ -428,13 +443,15 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
         linkage_results = build_read_linkage_weights(used_barcodes, barcode_to_anchor, anchors, putatives)
         cross_anchor_links = 0
         
-        for anchor, cross_anchor_barcodes in linkage_results.items():
-            for barcode, encoded, freq in cross_anchor_barcodes:
-                # Add this barcode to the current anchor neighborhood only once.
-                before = len(anchor_neighborhood[anchor])
-                anchor_neighborhood[anchor].add((barcode, encoded, freq))
-                if len(anchor_neighborhood[anchor]) != before:
-                    cross_anchor_links += 1
+        with open('not_previously_joined_neghborhoods.csv', 'w') as out:
+            out.write('anchor,anchor_freq,barcode,barcode_freq,original_anchor,original_anchor_freq\n')
+            for anchor, cross_anchor_barcodes in linkage_results.items():
+                for multi_anchor_barcode in cross_anchor_barcodes:
+                    # Add this barcode to the current anchor neighborhood only once.
+                    if multi_anchor_barcode[0] not in anchor_neighborhood[anchor]:
+                        anchor_neighborhood[anchor].add(multi_anchor_barcode[0])
+                        cross_anchor_links += 1
+                        out.write(f'{anchor},{anchors[anchor]},{multi_anchor_barcode[0][0]},{multi_anchor_barcode[0][2]},{multi_anchor_barcode[1]},{anchors[multi_anchor_barcode[1]]}\n')
 
         read_linkage_edge_count = cross_anchor_links
         logger.info('Read-linkage cross-anchor additions: %d', cross_anchor_links)
@@ -447,7 +464,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                 edge_weights[edge] += neighborhood_edge[2]
                 neighborhood_edge_count += 1
 
-
+        # TODO: This needs to go back to streaming
         # Write each undirected edge once with its cumulative weight.
         for (barcode1, barcode2), weight in edge_weights.items():
             graph_edges.write(f'{barcode1}\t{barcode2}\t{weight}\n')
