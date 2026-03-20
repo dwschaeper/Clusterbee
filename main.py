@@ -37,7 +37,7 @@ def parse_args():
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
     parser.add_argument('--min_qual', default=15, type=int,
                         help='The minimum average quality across a barcode for it to be considered.')
-    parser.add_argument('--min_anchor_percentile', default=2,
+    parser.add_argument('--min_anchor_percentile', default=1,
                         help='The percentile used to filter spurious anchors found during initial the search. By default, the anchors with exact matches in the bottom 1% are filtered as spurious.')
     parser.add_argument('--exact_anchor', default=False,
                         help='Whether or not to enforce anchors must be one per read and at the exact position as expected')

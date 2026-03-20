@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 _worker_processor = None
 
+
 class TrieNode:
     """
     Trie node object
@@ -40,7 +41,7 @@ def insert(root: TrieNode, barcode: str):
 class TrieBatchProcessor:
     """Worker class that processes batches of putative barcodes against an anchor trie."""
 
-    def __init__(self, max_hamming_dist, trie, barcode_len):
+    def __init__(self, max_hamming_dist, trie, barcode_len, keep_all):
         """
         Initialize the TrieBatchProcessor with the anchor trie and search parameters.
 
@@ -52,6 +53,7 @@ class TrieBatchProcessor:
         self.max_hamming_dist = max_hamming_dist
         self.trie = trie
         self.barcode_len = barcode_len
+        self.keep_all = keep_all
 
     def process(self, records_batch):
         """
@@ -69,20 +71,30 @@ class TrieBatchProcessor:
             matches = []
             # use the instance method (DFS owns max_hamming_dist)
             self._depth_first_search(self.trie, putative_barcode, 0, 0, matches)
-            hits = []
-            if matches:
-                # take best match, or all those tied for it
-                min_dist = 10
-                for match in matches:
-                    if match[1] < min_dist:
-                        hits = [match]
-                        min_dist = match[1]
-                    elif match[1] == min_dist:
-                        hits.append(match)
-                encoded = self._encode(putative_barcode)
+
+            if self.keep_all:
+                if matches:
+                    encoded = self._encode(putative_barcode)
+                else:
+                    encoded = None
+                local_out.append((putative_barcode, put_freq, encoded, matches))
+
             else:
-                encoded = None
-            local_out.append((putative_barcode, put_freq, encoded, hits))
+                hits = []
+                if matches:
+                    # take best match, or all those tied for it
+                    min_dist = 10
+                    for match in matches:
+                        if match[1] < min_dist:
+                            hits = [match]
+                            min_dist = match[1]
+                        elif match[1] == min_dist:
+                            hits.append(match)
+                    encoded = self._encode(putative_barcode)
+                else:
+                    encoded = None
+                local_out.append((putative_barcode, put_freq, encoded, hits))
+
         return local_out
 
     def _depth_first_search(self, node: TrieNode, putative_barcode: str, pos: int, mismatches: int, results: list):
@@ -112,13 +124,13 @@ class TrieBatchProcessor:
             self._depth_first_search(child, putative_barcode, pos + 1,
                                      mismatches + (trie_base != barcode_base), results)
 
-    def _encode(self,barcode: str) -> int:
+    def _encode(self, barcode: str) -> int:
         """
         Encode the barcode into a 32-bit integer
 
         Args:
             barcode (str): The barcode to be encoded
-            
+
         Returns:
             int: The integer encoding
         """
@@ -128,20 +140,21 @@ class TrieBatchProcessor:
         return x
 
 
-def _worker_init(max_hamming_dist, trie, barcode_len):
+def _worker_init(max_hamming_dist, trie, barcode_len, keep_all):
     """
     Initialize per-process TrieBatchProcessor.
 
     Args:
         max_hamming_dist (int): Maximum Hamming distance allowed for matches.
-        trie (TrieNode): Pre-built anchor trie to copy into the worker.
-        barcode_len (int): Expected barcode length (used by DFS termination).
+        trie (TrieNode):        Pre-built anchor trie to copy into the worker.
+        barcode_len (int):      Expected barcode length (used by DFS termination).
+        keep_all (bool):        Whether to keep all matches, or just the top match
 
     Returns:
         None
     """
     global _worker_processor
-    _worker_processor = TrieBatchProcessor(max_hamming_dist, trie, barcode_len)
+    _worker_processor = TrieBatchProcessor(max_hamming_dist, trie, barcode_len, keep_all)
 
 
 def _worker_process_batch(records_batch):
@@ -155,8 +168,10 @@ def _worker_process_batch(records_batch):
         list: Results from TrieBatchProcessor.process() for the batch.
     """
     if _worker_processor is None:
-        raise RuntimeError('Worker not initialized. This function must be run inside a worker process with _worker_init called.')
-    return _worker_processor.process(records_batch)
+        raise RuntimeError(
+            'Worker not initialized. This function must be run inside a worker process with _worker_init called.')
+    else:
+        return _worker_processor.process(records_batch)
 
 
 def _safe_future_result(future):
@@ -192,6 +207,21 @@ def hamming(e1: int, e2: int) -> int:
     return x.bit_count()
 
 
+def encode_barcode(barcode: str) -> int:
+    """Encode a barcode string into a compact 2-bit-per-base integer.
+
+    Args:
+        barcode (str): The barcode to be encoded
+
+    Returns:
+        int: The encoded barcode
+    """
+    x = 0
+    for base in barcode:
+        x = (x << 2) | TRANSLATE[base]
+    return x
+
+
 def calculate_anchor_neighborhoods(putative_barcodes):
     """
     Takes the putative barcodes associated with a single anchor and calculate the
@@ -206,13 +236,106 @@ def calculate_anchor_neighborhoods(putative_barcodes):
     edges = []
     for (barcode1, encoded1, freq1), (barcode2, encoded2, freq2) in combinations(putative_barcodes, 2):
         dist = hamming(encoded1, encoded2)
-        weight = 0.1 * (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
+        # weight = (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
+        weight = math.sqrt((freq1 * freq2)) * (2 ** -dist)
         edges.append((barcode1, barcode2, weight))
 
     return edges
 
 
-def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], max_hamming_dist: int, barcode_len: int, processes: int = None, batch_size: int = 10000):
+def canonical_edge(barcode1: str, barcode2: str) -> tuple[str, str]:
+    """Return a stable ordering for undirected barcode-barcode edges.
+
+    Args:
+        barcode1 (str): The first barcode in the edge
+        barcode2 (str): The second barcode in the edge
+
+    Returns:
+        tuple[str, str]: Tuple of (barcode1, barcode2)
+    """
+    if barcode1 <= barcode2:
+        return barcode1, barcode2
+    return barcode2, barcode1
+
+
+def combine_batch_results(results_batch, anchors: dict[str, int], total_edges, graph_edges, putatives_with_matches,
+                          putatives_without_matches, putative_barcodes_match_size, processed, anchor_neighborhood, keep_all=True):
+    """Process a worker result batch and update mutable edge-collection state.
+
+    Args:
+        results_batch (list):                       Results from TrieBatchProcessor.process() for the batch
+        anchors (dict[str, int]):                   Dictionary of anchor freqs
+        total_edges (int):                          Running total number of edges
+        graph_edges (list):                         List of tuples, (barcode1, barcode2, weight) for each edge in the graph
+        putatives_with_matches (int):               Number of putative barcodes with matches
+        putatives_without_matches (int):            Number of putative barcodes without matches
+        putative_barcodes_match_size (defaultdict): Number of anchors a putative barcode matches
+        anchor_neighborhood (defaultdict):          Dictionary of anchor neighborhoods
+        processed (int):                            Running total of number of reads processed
+        keep_all (bool):                            Whether to keep all matches, or just the top match
+
+    Returns:
+        int:         Running total number of edges
+        list:        List of tuples, (barcode1, barcode2, weight) for each edge in the graph
+        int:         Number of putative barcodes with matches
+        int:         Number of putative barcodes without matches
+        defaultdict: Number of anchors a putative barcode matches
+        defaultdict: Dictionary of anchor neighborhoods
+        int:         Running total of number of reads processed
+    """
+    if keep_all:
+        for putative_barcode, put_freq, encoded, matches in results_batch:
+            if not matches:
+                putatives_without_matches += 1
+            else:
+                putatives_with_matches += 1
+                putative_barcodes_match_size[len(matches)] += 1
+
+                for anchor_barcode, mismatches in matches:
+                    weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                    barcode1, barcode2 = canonical_edge(anchor_barcode, putative_barcode)
+                    graph_edges.append((barcode1, barcode2, weight))
+                    total_edges += 1
+                    anchor_neighborhood[anchor_barcode].add((putative_barcode, encoded, put_freq))
+
+            processed += 1
+            if processed % 500000 == 0:
+                logger.info('Queried %d putative barcodes', processed)
+
+        return total_edges, graph_edges, putatives_with_matches, putatives_without_matches, putative_barcodes_match_size, processed, anchor_neighborhood
+
+    else:
+        for putative_barcode, put_freq, encoded, matches in results_batch:
+            if not matches:
+                putatives_without_matches += 1
+            else:
+                putatives_with_matches += 1
+                putative_barcodes_match_size[len(matches)] += 1
+                max_freq_match = (0, '', 0.0)
+                for anchor_barcode, mismatches in matches:
+                    # holding on to keep best match chunk
+                    if anchors[anchor_barcode] > max_freq_match[0]:
+                        # weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
+                        weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                        max_freq_match = (anchors[anchor_barcode], anchor_barcode, weight)
+
+                # keep the highest-frequency anchor among tied best-distance matches
+                if max_freq_match[0] != 0:
+                    _anchor_freq, top_anchor, weight = max_freq_match
+                    barcode1, barcode2 = canonical_edge(top_anchor, putative_barcode)
+                    graph_edges.append((barcode1, barcode2, weight))
+                    total_edges += 1
+                    anchor_neighborhood[top_anchor].add((putative_barcode, encoded, put_freq))
+
+            processed += 1
+            if processed % 500000 == 0:
+                logger.info('Queried %d putative barcodes', processed)
+
+        return total_edges, graph_edges, putatives_with_matches, putatives_without_matches, putative_barcodes_match_size, processed, anchor_neighborhood
+
+
+def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], max_hamming_dist: int, barcode_len: int,
+                          processes: int = None, batch_size: int = 10000, keep_all: bool = True):
     """
     Build graph edges using trie-based search bounded by hamming distance.
 
@@ -223,6 +346,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
         barcode_len (int):      Length of the barcode.
         processes (int):        Number of worker processes (defaults to cpu_count()-1).
         batch_size (int):       Number of putative barcodes to send per worker task.
+        keep_all (bool):        Whether to keep all matches, or just the top match
 
     Returns:
         None
@@ -236,25 +360,24 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
         insert(trie, barcode)
 
     logger.info('Searching the putative barcodes in the anchor trie')
-    edges = 0
-    without_matches = 0
-    with_matches = 0
-    neighborhood_edge_count = 0
-    anchor_candidates = defaultdict(list)
-    anchor_size_freq = defaultdict(int)
-    non_anchor_barcodes = set()
-    non_anchor_reads = set()
-    anchor_reads = set()
+    total_edges = 0
+    graph_edges = []
+    putatives_without_matches = 0
+    putatives_with_matches = 0
+    putative_barcodes_match_size = defaultdict(int)
     processed = 0
-    multi_match = defaultdict(int)
+    anchor_neighborhood = defaultdict(set)
+
+    anchor_size_freq = defaultdict(int)
+    neighborhood_edge_count = 0
 
     max_workers = processes if processes and processes > 0 else max(1, (os.cpu_count() or 2) - 1)
 
     logger.info('Using %d worker processes (batch_size=%d)', max_workers, batch_size)
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
-                                      initargs=(max_hamming_dist, trie, barcode_len))
+                                      initargs=(max_hamming_dist, trie, barcode_len, keep_all))
 
-    with open(".graph_edges", "w") as graph_edges, executor_cm as executor:
+    with open(".graph_edges", "w") as graph_edges_f, executor_cm as executor:
         pending = []
         batch = []
 
@@ -268,82 +391,46 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
             if len(pending) >= max_workers * 2:
                 done_future = next(as_completed(pending))
                 pending.remove(done_future)
-                results = _safe_future_result(done_future)
-
-                for putative_barcode, put_freq, encoded, matches in results:
-                    if not matches:
-                        without_matches += 1
-                    else:
-                        with_matches += 1
-                        multi_match[len(matches)] += 1
-                    for anchor_barcode, mismatches in matches:
-                        edges += 1
-                        anchor_candidates[anchor_barcode].append((putative_barcode, encoded, put_freq))
-                        if mismatches != 0:  # don't make an edge between putative anchor and itself
-                            non_anchor_barcodes.add(putative_barcode)
-                            weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
-                            graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
-
-                    processed += 1
-                    if processed % 500000 == 0:
-                        logger.info('Queried %d putative barcodes', processed)
+                results = _safe_future_result(done_future)  # (putative_barcode, put_freq, encoded, matches)
+                total_edges, graph_edges, putatives_with_matches, putatives_without_matches, putative_barcodes_match_size, processed, anchor_neighborhood = combine_batch_results(
+                    results, anchors, total_edges, graph_edges, putatives_with_matches, putatives_without_matches,
+                    putative_barcodes_match_size, processed, anchor_neighborhood, keep_all)
 
         # submit remaining records
         if batch:
             pending.append(executor.submit(_worker_process_batch, batch))
         for future in as_completed(pending):
             results = _safe_future_result(future)
-            for putative_barcode, put_freq, encoded, matches in results:
-                if not matches:
-                    without_matches += 1
-                else:
-                    with_matches += 1
-                    multi_match[len(matches)] += 1
-                for anchor_barcode, mismatches in matches:
-                    edges += 1
-                    anchor_candidates[anchor_barcode].append((putative_barcode, encoded, put_freq))
-                    if mismatches != 0:  # don't make an edge between putative anchor and itself
-                        non_anchor_barcodes.add(putative_barcode)
-                        weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
-                        graph_edges.write(f'{anchor_barcode}\t{putative_barcode}\t{weight}\n')
+            total_edges, graph_edges, putatives_with_matches, putatives_without_matches, putative_barcodes_match_size, processed, anchor_neighborhood = combine_batch_results(
+                results, anchors, total_edges, graph_edges, putatives_with_matches, putatives_without_matches,
+                putative_barcodes_match_size, processed, anchor_neighborhood, keep_all)
 
-                processed += 1
-                if processed % 500000 == 0:
-                    logger.info('Queried %d putative barcodes', processed)
-
-        for anchor, putatives in anchor_candidates.items():
-            neighborhood_edges = calculate_anchor_neighborhoods(putatives)
+        for anchor, putatives_set in anchor_neighborhood.items():
+            # Convert set to list for calculate_anchor_neighborhoods
+            neighborhood_edges = calculate_anchor_neighborhoods(list(putatives_set))
             for neighborhood_edge in neighborhood_edges:
-                graph_edges.write(f'{neighborhood_edge[0]}\t{neighborhood_edge[1]}\t{neighborhood_edge[2]}\n')
+                barcode1, barcode2 = canonical_edge(neighborhood_edge[0], neighborhood_edge[1])
+                graph_edges.append((barcode1, barcode2, neighborhood_edge[2]))
                 neighborhood_edge_count += 1
 
-    logger.info('Number of anchor-putative edges: %d', edges)
-    logger.info('Number of barcodes without associated edges: %d', without_matches)
-    logger.info('Number of barcodes with associated edges: %d', with_matches)
+        # sort graph edges for reproducibility
+        graph_edges = sorted(graph_edges)
+
+        # Write sorted edges
+        for barcode1, barcode2, weight in graph_edges:
+            graph_edges_f.write(f'{barcode1}\t{barcode2}\t{weight}\n')
+
+    logger.info('Number of anchor-putative edges: %d', total_edges)
+    logger.info('Number of putative barcodes with associated edges: %d', putatives_with_matches)
+    logger.info('Number of putative barcodes without associated edges: %d', putatives_without_matches)
     logger.info('Neighborhood edge count: %d', neighborhood_edge_count)
-    logger.info('Distribution of putatives that match multiple anchors %s', str(multi_match))
+    logger.info('Distribution of putatives that match multiple anchors %s', str(putative_barcodes_match_size))
 
-    # find out how many reads are covered by the non-anchor nodes
-    with open('.putative_barcodes', 'r') as infile:
-        for line in infile:
-            row = line.strip().split('\t')
-            if row[1] in non_anchor_barcodes:
-                non_anchor_reads.add(row[0])
-    logger.info('Number of reads associated with non-anchor barcodes: %d', len(non_anchor_reads))
-
-    # find number of reads associated with anchor barcodes
-    with open('.anchors', 'r') as infile:
-        for line in infile:
-            row = line.strip().split('\t')
-            if row[1] in anchor_barcodes:
-                anchor_reads.add(row[0])
-    logger.info('Number of reads associated with anchor barcodes: %d', len(anchor_reads))
-                
-    anchor_sizes = [len(x) for x in anchor_candidates.values()]
+    anchor_sizes = [len(x) for x in anchor_neighborhood.values()]
     for val in anchor_sizes:
         anchor_size_freq[val] += 1
     plt.hist(anchor_sizes)
     plt.savefig('anchor_sizes.png')
-    logger.info('The distrubition of the number of putative barcodes linked to an anchor barcode is saved to "anchor_sizes.png"')
-
+    logger.info(
+        'The distrubition of the number of putative barcodes linked to an anchor barcode is saved to "anchor_sizes.png"')
 
