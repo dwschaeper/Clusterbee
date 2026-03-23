@@ -1,4 +1,5 @@
 from collections import defaultdict
+from itertools import groupby
 import logging
 
 logger = logging.getLogger(__name__)
@@ -18,16 +19,8 @@ def assignment(graph_data):
     for barcode, community in zip(graph_barcodes, graph_communities):
         barcode_community_lookup[barcode].append(community)
 
-    # check to see that a barcode only has one associated community
-    multi = 0
-    for key, value in barcode_community_lookup.items():
-        if len(value) > 1:
-            multi += 1
-    logger.info('Number of barcodes that belong to multiple communities: %d', multi)
-
     # collect the set of barcodes in the communities for quick search
     graph_barcodes = set(graph_barcodes)
-    
 
     # make defaultdicts for cell membership
     cell_membership = defaultdict(set)
@@ -35,28 +28,30 @@ def assignment(graph_data):
     read_community = defaultdict(set)
 
     # track used to see if a read has multiple members
-    used_reads = set()
-    multi_reads = 0
+    valid_barcodes_per_read = defaultdict(int)
 
-    with open('cell_sizes.tsv', 'w') as cell_sizes_f, open('cell_membership.tsv', 'w') as cell_membership_f, open('.putative_barcodes', 'r') as putatives_file, open('read_community.tsv', 'w') as read_community_f:
-        for line in putatives_file:
-            putative_data = line.strip().split('\t')
-            read = putative_data[0]
-            barcode = putative_data[1]
-            if barcode in graph_barcodes:
-                community = barcode_community_lookup[barcode]
-                # track only once per community
-                if read not in cell_membership[community[0]]:
-                    cell_membership[community[0]].add(read)
-                    cell_sizes[community[0]] += 1
-                    read_community[read].add(str(community[0]))
-                    # check to see if read is present in another community
-                    if read in used_reads:
-                        multi_reads += 1
-                    used_reads.add(read)
-
-        logger.info('Number of multi-assigned reads: %d', multi_reads)
+    with open('cell_sizes.tsv', 'w') as cell_sizes_f, open('cell_membership.tsv', 'w') as cell_membership_f, open(
+            '.putative_barcodes', 'r') as putatives_file, open('read_community.tsv', 'w') as read_community_f:
+        for read, group in groupby(putatives_file, key=lambda line: line.split('\t', 1)[0]):
+            grouped_data = [line.rstrip('\n').split('\t') for line in group]
+            valid_barcodes = 0
+            communities = []
+            umis = []
+            for row in grouped_data:
+                barcode = row[1]
+                umi = row[2]
+                if barcode in graph_barcodes:
+                    valid_barcodes += 1
+                    communities.append(str(barcode_community_lookup[barcode]))
+                    umis.append(umi)
+            valid_barcodes_per_read[valid_barcodes] += 1
+            if len(communities) == 1:
+                cell_membership[communities[0]].add(read)
+                cell_sizes[communities[0]] += 1
+                read_community[read].add(str(communities[0]))
         
+        logger.info('Distribution of valid barcodes per read: %s', valid_barcodes_per_read)
+
         # write out the data
         cell_membership_f.write('community\treads\n')
         for key, value in cell_membership.items():
