@@ -1,4 +1,5 @@
 from collections import defaultdict, Counter
+import random
 import igraph as ig
 import pandas as pd
 import numpy as np
@@ -52,8 +53,6 @@ def plot_knee(put_community_freq: dict[str, int]):
     plt.scatter(ranks[knee_index], cutoff_freq, s=80)
     plt.axvline(ranks[knee_index], linestyle='--')
     plt.axhline(cutoff_freq, linestyle='--')
-    plt.xscale('log')
-    plt.yscale('log')
     plt.xlabel('Barcode Rank')
     plt.ylabel('Read Count')
     plt.title('Anchor Barcode Knee Plot')
@@ -157,10 +156,10 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
     """Build graph, run Leiden, apply knee cutoff (scaled), and optionally write diagnostics.
 
     Args:
-        put_anchor_freq (dict): anchor barcode -> read count
+        put_anchor_freq (dict):  anchor barcode -> read count
         put_barcode_freq (dict): putative barcode -> read count
-        knee_scale (float): multiplier applied to the knee cutoff (use <1.0 to be less restrictive)
-        diagnostics (bool): when True, write `community_summary.tsv` and extra plots
+        knee_scale (float):      multiplier applied to the knee cutoff (use <1.0 to be less restrictive)
+        diagnostics (bool):      when True, write `community_summary.tsv` and extra plots
     """
     logger.info('making the graph')
     edges = []
@@ -185,9 +184,14 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
 
     add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
 
-    logger.info('making communities')
-    communities = graph.community_leiden(weights='weight', resolution=1.2)
+    #communities = graph.community_leiden(weights='weight', resolution=0.5)
+    communities = graph.community_multilevel(weights='weight')
     graph.vs['community'] = communities.membership
+
+	# write graph pre-filtering
+    graph.write('graph_edges.ncol', weights='weight')
+    graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
+    graph_data.to_csv('node_attributes.tsv', sep='\t', index=False)
 
     anchored_communities, anchorless_communities = get_anchor_communities(graph)
     filter_anchorless(graph, anchorless_communities)
@@ -233,14 +237,10 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
         logger.info('Wrote community diagnostics to community_summary.tsv')
 
     # apply scaled cutoff
-    knee_filter(graph, community_freq, scaled_cutoff)
+    #knee_filter(graph, community_freq, scaled_cutoff)
 
     write_info(graph, '\nCOMMUNITY STATS\n')
-    graph.write('graph_edges.ncol', weights='weight')
-
-    # store graph data
-    graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
-    graph_data.to_csv('node_attributes.tsv', sep='\t', index=False)
+    
 
     return graph_data
 
