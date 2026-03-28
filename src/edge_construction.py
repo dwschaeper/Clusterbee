@@ -1,7 +1,7 @@
 from collections import defaultdict
 from itertools import combinations
 import matplotlib.pyplot as plt
-import math
+import numpy as np
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
@@ -72,7 +72,7 @@ class TrieBatchProcessor:
             # use the instance method (DFS owns max_hamming_dist)
             self._depth_first_search(self.trie, putative_barcode, 0, 0, matches)
 
-            if self.keep_all:
+            if not self.keep_all:
                 if matches:
                     encoded = self._encode(putative_barcode)
                 else:
@@ -237,7 +237,8 @@ def calculate_anchor_neighborhoods(putative_barcodes):
     for (barcode1, encoded1, freq1), (barcode2, encoded2, freq2) in combinations(putative_barcodes, 2):
         dist = hamming(encoded1, encoded2)
         # weight = (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
-        weight = math.sqrt((freq1 * freq2)) * (2 ** -dist)
+        #weight = (np.exp(-1*dist))
+        weight = (3 ** -dist)
         edges.append((barcode1, barcode2, weight))
 
     return edges
@@ -283,7 +284,7 @@ def combine_batch_results(results_batch, anchors: dict[str, int], total_edges, g
         defaultdict: Dictionary of anchor neighborhoods
         int:         Running total of number of reads processed
     """
-    if keep_all:
+    if not keep_all:
         for putative_barcode, put_freq, encoded, matches in results_batch:
             if not matches:
                 putatives_without_matches += 1
@@ -292,7 +293,11 @@ def combine_batch_results(results_batch, anchors: dict[str, int], total_edges, g
                 putative_barcodes_match_size[len(matches)] += 1
 
                 for anchor_barcode, mismatches in matches:
-                    weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                    if mismatches == 0:
+                        continue
+                    #weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                    #weight = (np.exp(-1*mismatches)) + (0.01 * np.log(anchors[anchor_barcode]))
+                    weight = (3 ** -mismatches) + (np.log(anchors[anchor_barcode]))
                     barcode1, barcode2 = canonical_edge(anchor_barcode, putative_barcode)
                     graph_edges.append((barcode1, barcode2, weight))
                     total_edges += 1
@@ -313,10 +318,13 @@ def combine_batch_results(results_batch, anchors: dict[str, int], total_edges, g
                 putative_barcodes_match_size[len(matches)] += 1
                 max_freq_match = (0, '', 0.0)
                 for anchor_barcode, mismatches in matches:
-                    # holding on to keep best match chunk
+                    if mismatches == 0:
+                        continue
+
                     if anchors[anchor_barcode] > max_freq_match[0]:
-                        # weight = math.sqrt(anchors[anchor_barcode]) * (2 ** -mismatches)
-                        weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                        #weight = math.sqrt((anchors[anchor_barcode] * put_freq)) * (2 ** -mismatches)
+                        #weight = (np.exp(-1*mismatches)) + (0.01 * np.log(anchors[anchor_barcode]))
+                        weight = (3 ** -mismatches) + (np.log(anchors[anchor_barcode]))
                         max_freq_match = (anchors[anchor_barcode], anchor_barcode, weight)
 
                 # keep the highest-frequency anchor among tied best-distance matches
@@ -351,6 +359,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     Returns:
         None
     """
+    logger.section('EDGE CONSTRUCTION')
     logger.info('Begin construction of edges')
 
     logger.info('Creating anchor trie')
