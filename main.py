@@ -3,7 +3,7 @@ import logging
 
 from src.logging_config import setup_logging
 from src.extract_barcodes import extract_barcodes
-from src.edge_construction_read_linkage import construct_graph_edges
+from src.edge_construction import construct_graph_edges
 from src.make_graph import make_graph
 from src.reads_to_cells import assignment
 
@@ -41,6 +41,10 @@ def parse_args():
                         help='The percentile used to filter spurious anchors found during initial the search. By default, the anchors with exact matches in the bottom 1% are filtered as spurious.')
     parser.add_argument('--exact_anchor', default=False,
                         help='Whether or not to enforce anchors must be one per read and at the exact position as expected')
+    parser.add_argument('--upstream_region_tsv', default=None, type=str,
+                        help='Optional output TSV path with sequence from the first barcode-search base through the polyT match.')
+    parser.add_argument('--keep_best_match_only', action='store_true',
+                        help='Whether to keep all of the matches between a putative barcode and the anchor set or only the best. Default is True to keep all matches.')
 
     # Controls how strict the knee cutoff is. Values < 1.0 are less restrictive (keep smaller communities).
     parser.add_argument('--knee_scale', default=1.0, type=float,
@@ -56,7 +60,7 @@ if __name__ == '__main__':
     logger.info("Starting program")
 
     arguments = parse_args()
-    
+
     # read in the whitelist
     with open(arguments.cell_barcode_whitelist, 'r') as file:
         lines = file.readlines()
@@ -73,15 +77,16 @@ if __name__ == '__main__':
                      exact_anchor = arguments.exact_anchor,
                      whitelist=whitelist,
                      processes=arguments.processes,
-                     batch_size=arguments.batch_size
+                     batch_size=arguments.batch_size,
+                     upstream_region_tsv=arguments.upstream_region_tsv
                      )
 
     with open('.anchor_freqs', 'w') as out:
         for key, value in putative_anchors.items():
             out.write(f'{key},{value}\n')
-    exit(1)
-    construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist, arguments.barcode_len, processes=arguments.processes, batch_size=arguments.batch_size)
-
+    
+    construct_graph_edges(putative_anchors, putative_barcodes, arguments.max_dist, arguments.barcode_len, processes=arguments.processes, batch_size=arguments.batch_size, keep_all=arguments.keep_best_match_only)
+    
     graph_data = make_graph(putative_anchors, putative_barcodes, knee_scale=arguments.knee_scale, diagnostics=arguments.diagnostics)
 
     assignment(graph_data)
