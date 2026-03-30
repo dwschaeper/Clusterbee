@@ -1,12 +1,17 @@
 from collections import defaultdict, Counter
-import random
 import igraph as ig
+import leidenalg as la
+import random
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
 
 logger = logging.getLogger(__name__)
+ig.set_random_seed = 357
+random.seed = 357
+np.random.seed = 357
+seed = 357
 
 
 def plot_knee(put_community_freq: dict[str, int]):
@@ -152,8 +157,57 @@ def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
     graph.vs['degree'] = graph.degree()
 
 
+def refine_multi_anchor_communities(graph):
+    """Refine Ledien communities for communities with >1 anchors.
+
+    Args:
+        graph (iGraph): initial graph with Leiden clusters
+    """
+    initial_membership = graph.vs['community']
+    anchor_counts = defaultdict(int)
+
+    for community, node_type in zip(initial_membership, graph.vs['type']):
+        if node_type == 'anchor':
+            anchor_counts[community] += 1
+
+    target_communities = {community for community, count in anchor_counts.items() if count > 1}
+    if not target_communities:
+        logger.info('No multi-anchor Louvain communities found for Leiden refinement.')
+        return
+
+    logger.info('Refining %d multi-anchor Louvain communities with Leiden.', len(target_communities))
+    refined_membership = list(initial_membership)
+    next_label = max(initial_membership) + 1
+    refined_count = 0
+
+    for community in sorted(list(target_communities)):
+        vertex_indices = [idx for idx, label in enumerate(initial_membership) if label == community]
+        if len(vertex_indices) < 2:
+            continue
+
+        subgraph = graph.subgraph(sorted(vertex_indices))
+        #partition = subgraph.community_multilevel(weights='weight')
+        partition = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', resolution_parameter=0.5)
+
+        local_membership = partition.membership
+        local_clusters = sorted(set(local_membership))
+        if len(local_clusters) <= 1:
+            continue
+
+        cluster_to_global = {cluster_id: next_label + offset for offset, cluster_id in enumerate(local_clusters)}
+        next_label += len(local_clusters)
+
+        for sub_idx, vertex_idx in enumerate(vertex_indices):
+            refined_membership[vertex_idx] = cluster_to_global[local_membership[sub_idx]]
+
+        refined_count += 1
+
+    graph.vs['community'] = refined_membership
+    logger.info('Leiden refinement split %d Louvain communities.', refined_count)
+
+
 def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagnostics: bool = False):
-    """Build graph, run Leiden, apply knee cutoff (scaled), and optionally write diagnostics.
+    """Build graph, run Louvain with targeted Leiden refinement, apply knee cutoff, and optionally write diagnostics.
 
     Args:
         put_anchor_freq (dict):  anchor barcode -> read count
@@ -184,9 +238,12 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
 
     add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
 
-    #communities = graph.community_leiden(weights='weight', resolution=0.5)
+    communities = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', resolution_parameter=0.5)
     communities = graph.community_multilevel(weights='weight')
     graph.vs['community'] = communities.membership
+    write_info(graph, '\nCOMMUNITY STATS AFTER INITIAL CLUSTERING\n')
+    # refine_multi_anchor_communities(graph)
+    # write_info(graph, '\nCOMMUNITY STATS AFTER LEDIEN REFINEMENT\n')
 
 	# write graph pre-filtering
     graph.write('graph_edges.ncol', weights='weight')
@@ -237,10 +294,9 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
         logger.info('Wrote community diagnostics to community_summary.tsv')
 
     # apply scaled cutoff
-    #knee_filter(graph, community_freq, scaled_cutoff)
+    knee_filter(graph, community_freq, scaled_cutoff)
 
-    write_info(graph, '\nCOMMUNITY STATS\n')
-    
+    write_info(graph, '\nCOMMUNITY STATS AFTER KNEE FILTERING\n')
 
     return graph_data
 
