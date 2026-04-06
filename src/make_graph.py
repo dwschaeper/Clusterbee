@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
+import ruptures as rpt
 
 logger = logging.getLogger(__name__)
 ig.set_random_seed = 357
@@ -67,6 +68,19 @@ def plot_knee(put_community_freq: dict[str, int]):
 
     return cutoff_freq
 
+
+def PELT_changepoints(put_community_freq):
+    sizes = np.array(sorted(put_community_freq.values(), reverse=True), dtype=float)
+    signal = sizes.reshape((-1, 1))
+
+    # TRY MIXTURE MODELS..GULP
+
+    model = rpt.Pelt(model='rbf').fit(signal)
+    penalty = 15
+    changepoints = model.predict(pen=penalty)
+    logger.info('PELT breakpoints p=15: %s', str(changepoints))
+
+    return changepoints[4]   # TODO: make method to grab a breakpoint
 
 
 def filter_anchorless(graph, anchorless):
@@ -187,7 +201,7 @@ def refine_multi_anchor_communities(graph):
 
         subgraph = graph.subgraph(sorted(vertex_indices))
         #partition = subgraph.community_multilevel(weights='weight')
-        partition = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', resolution_parameter=0.5)
+        partition = la.find_partition(graph, la.ModularityVertexPartition, seed=seed, weights='weight')
 
         local_membership = partition.membership
         local_clusters = sorted(set(local_membership))
@@ -242,8 +256,8 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
     communities = graph.community_multilevel(weights='weight')
     graph.vs['community'] = communities.membership
     write_info(graph, '\nCOMMUNITY STATS AFTER INITIAL CLUSTERING\n')
-    # refine_multi_anchor_communities(graph)
-    # write_info(graph, '\nCOMMUNITY STATS AFTER LEDIEN REFINEMENT\n')
+    #refine_multi_anchor_communities(graph)
+    #write_info(graph, '\nCOMMUNITY STATS AFTER LEDIEN REFINEMENT\n')
 
 	# write graph pre-filtering
     graph.write('graph_edges.ncol', weights='weight')
@@ -267,11 +281,12 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
 
     # original knee cutoff (from existing algorithm)
     cutoff = plot_knee(community_freq)
+    cutoff = PELT_changepoints(community_freq)
     logger.info('Cutoff threshold from knee plot of filtered community sizes: %d', cutoff)
 
     # scale cutoff by user-provided multiplier (allows being less/more restrictive)
-    scaled_cutoff = max(1, int(round(cutoff * knee_scale)))
-    logger.info('Scaled cutoff (knee_scale=%0.2f): %d', knee_scale, scaled_cutoff)
+    #scaled_cutoff = max(1, int(round(cutoff * knee_scale)))
+    logger.info('Scaled cutoff (knee_scale=%0.2f): %d', knee_scale, cutoff)
 
     # diagnostics: write community summary before filtering so you can inspect effect of cutoff
     if diagnostics:
@@ -294,9 +309,9 @@ def make_graph(put_anchor_freq, put_barcode_freq, knee_scale: float = 1.0, diagn
         logger.info('Wrote community diagnostics to community_summary.tsv')
 
     # apply scaled cutoff
-    knee_filter(graph, community_freq, scaled_cutoff)
+    #knee_filter(graph, community_freq, scaled_cutoff)
 
-    write_info(graph, '\nCOMMUNITY STATS AFTER KNEE FILTERING\n')
-
+    #write_info(graph, '\nCOMMUNITY STATS AFTER KNEE FILTERING\n')
+    graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
     return graph_data
 
