@@ -434,5 +434,8 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     logger.info('Number of anchor barcodes after filter: %d', len(putative_anchors_freq))
     logger.info('Number of unique putative barcodes: %d', len(putative_barcodes_freq))
 
+    putative_anchors_freq = dict(sorted(putative_anchors_freq.items()))
+    putative_barcodes_freq = dict(sorted(putative_barcodes_freq.items()))
+
     return putative_anchors_freq, putative_barcodes_freq
 

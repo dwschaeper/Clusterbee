@@ -9,7 +9,7 @@ def section(self, title, char='=', width=10):
 
 
 def setup_logging(level=logging.INFO, logfile=None):
-    fmt = logging.Formatter("%(asctime)s|%(levelname)s| %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fmt = logging.Formatter("%(asctime)s| %(message)s", datefmt="%H:%M:%S")
     root = logging.getLogger()
     root.setLevel(logging.INFO)
 
