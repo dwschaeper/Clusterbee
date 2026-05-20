@@ -6,8 +6,15 @@ import regex
 from collections import defaultdict, Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
+from scipy.stats import nbinom
+from scipy.special import logsumexp
+import ruptures as rpt
 import os
 import logging
+import pymc as pm
+import numpy as np
+import aesara.tensor as at
+
 
 logger = logging.getLogger(__name__)
 # per-process worker state and helpers (used by ProcessPoolExecutor initializer)
@@ -275,10 +282,106 @@ def _safe_future_result(future):
         raise
 
 
+def estimate_nb_params(vals, weights):
+    """
+    weighted method-of-moments estimate for negative binomial parameters
+    """
+    w = weights / weights.sum()
+    mean = np.sum(w * vals)
+    var = np.sum(w * (vals - mean) ** 2)
+    var = max(var, mean + 1e-3)  # don't allow it to be too low
+    
+    r = mean**2 / (var - mean)
+    r = max(r, 1e-3)
+
+    p = r / (r + mean)
+
+    return r, p
+
+
+def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv=None):
+    """
+    Deterministic NB mixture with sensitivity-controlled threshold + CSV output.
+
+    Args:
+        anchor_counter (dict): barcode -> count
+        sensitivity (float): threshold on P(real | x)
+        max_iter (int): EM iterations
+        tol (float): convergence tolerance
+        output_csv (str or None): path to write barcode probabilities
+
+    Returns:
+        dict with same structure as before
+    """
+
+    x = np.array(sorted(anchor_counter.values(), reverse=True), dtype=float)
+
+    # --- initialization ---
+    median = np.median(x)
+    z = (x > median).astype(float)
+    pi = z.mean()  # could use expected number of cells to get fraction of anchors labaled as noise
+
+    r1, p1 = estimate_nb_params(x, 1 - z + 1e-3)
+    r2, p2 = estimate_nb_params(x, z + 1e-3)
+
+    prev_ll = -np.inf
+
+    for _ in range(max_iter):
+        log_prob1 = np.log(1 - pi) + nbinom.logpmf(x, r1, p1)
+        log_prob2 = np.log(pi) + nbinom.logpmf(x, r2, p2)
+
+        denom = logsumexp([log_prob1, log_prob2], axis=0)
+        gamma = np.exp(log_prob2 - denom)
+
+        pi = gamma.mean()
+        r1, p1 = estimate_nb_params(x, 1 - gamma)
+        r2, p2 = estimate_nb_params(x, gamma)
+
+        ll = denom.sum()
+        if np.abs(ll - prev_ll) < tol:
+            break
+        prev_ll = ll
+
+    # enforce ordering
+    mean1 = r1 * (1 - p1) / p1
+    mean2 = r2 * (1 - p2) / p2
+
+    if mean1 > mean2:
+        gamma = 1 - gamma
+        r1, r2 = r2, r1
+        p1, p2 = p2, p1
+        pi = 1 - pi
+
+    assignments = (gamma > sensitivity).astype(int)
+
+    real_counts = np.sort(x[assignments == 1])
+    threshold = real_counts[0] if len(real_counts) > 0 else None
+
+    # --- CSV OUTPUT ---
+    if output_csv is not None:
+        with open(output_csv, "w") as f:
+            f.write("barcode,count,prob_real\n")
+            # preserve mapping between barcodes and sorted counts
+            sorted_items = sorted(anchor_counter.items(), key=lambda kv: kv[1], reverse=True)
+            for (barcode, count), prob in zip(sorted_items, gamma):
+                f.write(f"{barcode},{count},{prob:.6f}\n")
+
+    return {
+        "probs_real": gamma,
+        "assignments": assignments,
+        "threshold": threshold,
+        "params": {
+            "noise": {"r": r1, "p": p1},
+            "real": {"r": r2, "p": p2},
+            "mixing_fraction": pi,
+        },
+    }
+
+
 def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_len: int,
-                     search_range: int, min_qual: int, min_anchor_percentile: int, exact_anchor: bool,
+                     search_range: int, min_qual: int, exact_anchor: bool, anchor_tail_filter: int,
                      whitelist: set = None, processes: int = None, batch_size: int = 10000,
-                     upstream_region_tsv: str = None):
+                     upstream_region_tsv: str = None, sensitivity=0.9, max_iter=200):
     """
     Given a fastq file, extract all the barcodes.
 
@@ -289,12 +392,14 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
         umi_len (int):               The length of the UMI used
         search_range (int):          The range around the UMI length to look for exact matches
         min_qual (int):              The minimum average quality in a barcode for it to be considered
-        min_anchor_percentile (int): The minimum number of exact matches an anchor requires to be kept
         exact_anchor (bool):         Whether or not to enforce anchors must be one per read and at the exact position as expected
+        anchor_tail_filter (int):    The cutoff threshold for filtering the long tail before NB EM
         whitelist (set):             The whitelist of cell barcodes that are expected as a set for quick accession
         processes (int):             Number of worker processes (defaults to cpu_count() - 1)
         batch_size (int):            Number of reads per worker task (default 1000)
         upstream_region_tsv (str):   Output path for optional TSV of search-window-to-polyT sequences
+        sensitivity (float):         The probability required from the NB mixture to be considered a true anchor.
+        max_iter (int):              The maximum number of iteration for EM.
 
     Returns:
         defaultdict: anchor barcode: frequency
@@ -414,13 +519,12 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
 
     # filter putative anchors to remove spurious matches
     logger.info('Number of putative anchor barcodes before filter: %d', len(putative_anchors_freq))
-    anchor_freq_sizes = set(putative_anchors_freq.values())
-    cut = np.floor(np.percentile(list(anchor_freq_sizes), min_anchor_percentile))
-    logger.info(
-        'The minimum number of exact anchors matches required is %d calculated as the %d percentile of the anchor'
-            ' frequency set.',
-        cut, min_anchor_percentile)
-    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
+    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > anchor_tail_filter}
+    results = fit_nb_mixture(putative_anchors_freq, sensitivity, max_iter, output_csv='anchor_probs.csv')
+    cutoff = results['threshold']
+    logger.info('The cutoff frequency calculated from NB is: %d', cutoff)
+    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cutoff}
+    logger.info('The number of anchors after filtering is: %d', len(putative_anchors_freq))
 
     # log information
     logger.info('Total reads processed: %d', processed)

@@ -14,7 +14,14 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--input', required=True, type=str, help='The input fastq file.')
+    parser.add_argument('-i', '--input', required=True, type=str, 
+                        help='The input fastq file.')
+    parser.add_argument('--processes', default=None, type=int,
+                        help='Number of worker processes to use for barcode extraction (default: cpu_count()-1).')
+    parser.add_argument('--batch_size', default=10000, type=int,
+                        help='Number of reads per worker batch (default: 1000).')
+
+    # barcode extraction parameters
     parser.add_argument('--polyT_min_length', default=10, type=int, 
                         help='The minimum length required to identify a polyT(A) in the read.')
     parser.add_argument('--barcode_len', default=16, type=int,
@@ -25,30 +32,34 @@ def parse_args():
                         help='The length of the UMI sequencie used.')
     parser.add_argument('--cell_barcode_whitelist', default=None, type=str, required=True,
                         help='The whitelist of cell barcodes where each line in the whitelist is a barcode.')
-    parser.add_argument('--search_range', default=2, type=int,
+    parser.add_argument('--search_range', default=4, type=int,
                         help='The range around the UMI length to look for exact barcode matches if whitelist is provided.')
-    parser.add_argument('--processes', default=None, type=int,
-                        help='Number of worker processes to use for barcode extraction (default: cpu_count()-1).')
-    parser.add_argument('--batch_size', default=10000, type=int,
-                        help='Number of reads per worker batch (default: 1000).')
-    parser.add_argument('--max_dist', default=2, type=int,
-                        help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
     parser.add_argument('--min_qual', default=10, type=int,
                         help='The minimum average quality across a barcode for it to be considered.')
-    parser.add_argument('--min_anchor_percentile', default=1,
-                        help='The percentile used to filter spurious anchors found during initial the search. By default, the anchors with exact matches in the bottom 1% are filtered as spurious.')
     parser.add_argument('--exact_anchor', default=False,
                         help='Whether or not to enforce anchors must be one per read and at the exact position as expected')
     parser.add_argument('--upstream_region_tsv', default=None, type=str,
                         help='Optional output TSV path with sequence from the first barcode-search base through the polyT match.')
+    parser.add_argument('--anchor_tail_filter', default=10, type=int,
+                        help='The extremely long tail of spurious anchor matches has a detrimental impact on modeling the real anchor cutoff, so the tail is filtered by this value.')
+    parser.add_argument('--sensitivity', default=0.9, type=float,
+                        help='The probabilty required from the NB mixture to be considered a true anchor.')
+    parser.add_argument('--max_iter', default=200, type=int,
+                        help='The maximum number of iterations for the EM step.')
+    
+    # edge construction parameters
+    parser.add_argument('--max_dist', default=2, type=int,
+                        help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
     parser.add_argument('--keep_best_match_only', action='store_true',
                         help='If set, keep only matches at the minimum hamming distance (including ties). By default, keep all matches within max_dist.')
-    parser.add_argument('--kmer_size', default=4, type=int,
-                        help='K-mer size used to prefilter anchors before Myers fallback (default: 4).')
-    parser.add_argument('--min_kmer_matches', default=3, type=int,
-                        help='Minimum shared k-mers required to compare a putative/anchor pair with Myers (default: 3).')
+    parser.add_argument('--kmer_size', default=5, type=int,
+                        help='K-mer size used to prefilter anchors before Myers fallback (default: 5).')
+    parser.add_argument('--min_kmer_matches', default=5, type=int,
+                        help='Minimum shared k-mers required to compare a putative/anchor pair with Myers (default: 5).')
     parser.add_argument('--max_myers_candidates', default=7, type=int,
                         help='Maximum number of candidate anchors to send into Myers after k-mer filtering (default: 7).')
+    
+    # graph construction parameters
     parser.add_argument('--resolution', default=0.05, type=float,
                         help='Resolution for leiden clustering.')
     parser.add_argument('--iterations', default=-1, type=int,
@@ -74,12 +85,14 @@ if __name__ == '__main__':
                      umi_len=arguments.umi_len,
                      search_range=arguments.search_range,
                      min_qual=arguments.min_qual,
-                     min_anchor_percentile=arguments.min_anchor_percentile,
                      exact_anchor = arguments.exact_anchor,
+                     anchor_tail_filter = arguments.anchor_tail_filter,
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size,
-                     upstream_region_tsv=arguments.upstream_region_tsv
+                     upstream_region_tsv=arguments.upstream_region_tsv,
+                     sensitivity=arguments.sensitivity,
+                     max_iter=arguments.max_iter
                      )
 
     with open('.anchor_freqs', 'w') as out:
@@ -94,8 +107,8 @@ if __name__ == '__main__':
         processes=arguments.processes,
         batch_size=arguments.batch_size,
         keep_best_match_only=arguments.keep_best_match_only,
-        kmer_size=5,
-        min_kmer_matches=6,
+        kmer_size=arguments.kmer_size,
+        min_kmer_matches=arguments.min_kmer_matches,
         max_myers_candidates=arguments.max_myers_candidates
     )
     
