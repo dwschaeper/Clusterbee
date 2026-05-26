@@ -8,12 +8,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
 from scipy.stats import nbinom
 from scipy.special import logsumexp
-import ruptures as rpt
 import os
 import logging
-import pymc as pm
-import numpy as np
-import aesara.tensor as at
+import matplotlib.pyplot as plt
 
 
 logger = logging.getLogger(__name__)
@@ -48,7 +45,7 @@ class BarcodeBatchProcessor:
         self.whitelist = whitelist
         self.exact_anchor = exact_anchor
         self.write_upstream_region = write_upstream_region
-        self.polyt_pattern = f'TTTT(?:T{{{polyt_min_length - 4},}}){{e<=1}}'
+        self.polyt_pattern = f'TTTTTTTTT(?:T{{{polyt_min_length - 9},}}){{e<=1}}'
 
     def process(self, records_batch):
         """
@@ -166,7 +163,7 @@ class BarcodeBatchProcessor:
             if len(checker) != self.barcode_len:
                 quality_filtered += 1
                 continue
-            if self._avg_qual(checker_qual) <= self.min_qual:
+            if self._avg_qual(checker_qual) < self.min_qual:
                 quality_filtered += 1
                 continue
             if not self.exact_anchor:
@@ -205,14 +202,16 @@ class BarcodeBatchProcessor:
         reverse = regex.findall(self.polyt_pattern, reverse_seq[:200])
 
         if forward:
-            polyt_start = sequence.find(forward[0])
+            polyt_start = sequence.find(max(forward, key=len))
+            #polyt_start = sequence.find(forward[0])
             # include some of the polyT in case barcode/UMI ends in T
             upstream_tail = sequence[:polyt_start]
             upstream_qual = qual[:polyt_start]
             search_to_polyt_region = upstream_tail[-(self.barcode_len + self.umi_len + self.search_range):]
 
         elif reverse:
-            polyt_start = reverse_seq.find(reverse[0])
+            polyt_start = reverse_seq.find(max(reverse, key=len))
+            #polyt_start = sequence.find(reverse[0])
             # include some of the polyT in case barcode/UMI ends in T
             upstream_tail = reverse_seq[:polyt_start]
             upstream_qual = reverse_qual[:polyt_start]
@@ -299,7 +298,7 @@ def estimate_nb_params(vals, weights):
     return r, p
 
 
-def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv=None):
+def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv='anchor_probabilities.csv'):
     """
     Deterministic NB mixture with sensitivity-controlled threshold + CSV output.
 
@@ -357,14 +356,13 @@ def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv=N
     real_counts = np.sort(x[assignments == 1])
     threshold = real_counts[0] if len(real_counts) > 0 else None
 
-    # --- CSV OUTPUT ---
     if output_csv is not None:
         with open(output_csv, "w") as f:
             f.write("barcode,count,prob_real\n")
-            # preserve mapping between barcodes and sorted counts
             sorted_items = sorted(anchor_counter.items(), key=lambda kv: kv[1], reverse=True)
             for (barcode, count), prob in zip(sorted_items, gamma):
                 f.write(f"{barcode},{count},{prob:.6f}\n")
+        logger.info('Probabilies for anchors to be real are saved in "%s"', output_csv) 
 
     return {
         "probs_real": gamma,
@@ -376,6 +374,45 @@ def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv=N
             "mixing_fraction": pi,
         },
     }
+
+
+def plot_anchors(anchor_counter, probs_real, cutoff, sensitivity):
+    """
+    Plot:
+    1) ranked anchor counts
+    2) count vs probability (second panel)
+
+    Args:
+        anchor_counter (Counter): barcode -> count
+        cutoff (int): NB-derived cutoff
+        anchor_tail_filter (int): pre-filter cutoff
+        probs_real (array): P(real | x) aligned to sorted counts (desc)
+    """
+    counts = np.array(sorted(anchor_counter.values(), reverse=True), dtype=float)
+
+    real_threshold = np.sum(counts > cutoff)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+
+    ax1.scatter(np.arange(len(counts)), counts, s=5)
+    ax1.axvline(x=real_threshold, linestyle='--', color='red', label='NB cutoff')
+    ax1.set_title('Anchor Frequency (Ranked)')
+    ax1.set_xlabel('Ranked Index')
+    ax1.set_ylabel('Frequency')
+    ax1.legend()
+
+    ax2.scatter(counts, probs_real, s=5)
+    ax2.set_title('P(real | count)')
+    ax2.set_xlabel('Anchor Frequency')
+    ax2.set_ylabel('Probability')
+    ax2.axhline(y=sensitivity, linestyle='--', color='gray', label='Sensitivity')
+    ax2.legend()
+
+    plt.tight_layout()
+    plt.savefig('anchor_frequency_thresholds_and_probability.png')
+    plt.close()
+
+    logger.info('Ranked anchor plot has been saved in anchor_frequency_thresholds_and_probability.png')
 
 
 def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_len: int,
@@ -518,11 +555,20 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                     logger.info('Extracted barcodes from %d reads', processed)
 
     # filter putative anchors to remove spurious matches
+    with open('.anchor_freqs', 'w') as out:
+        for key, value in putative_anchors_freq.items():
+            out.write(f'{key},{value}\n')
+
     logger.info('Number of putative anchor barcodes before filter: %d', len(putative_anchors_freq))
-    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > anchor_tail_filter}
+    anchor_freq_sizes = set(putative_anchors_freq.values())
+    cut = np.floor(np.percentile(list(anchor_freq_sizes), 1))
+    print(cut)
+    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
+    print(len(putative_anchors_freq))
     results = fit_nb_mixture(putative_anchors_freq, sensitivity, max_iter, output_csv='anchor_probs.csv')
     cutoff = results['threshold']
     logger.info('The cutoff frequency calculated from NB is: %d', cutoff)
+    plot_anchors(putative_anchors_freq, results['probs_real'], cutoff, sensitivity)
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cutoff}
     logger.info('The number of anchors after filtering is: %d', len(putative_anchors_freq))
 

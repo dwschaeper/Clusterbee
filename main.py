@@ -34,7 +34,7 @@ def parse_args():
                         help='The whitelist of cell barcodes where each line in the whitelist is a barcode.')
     parser.add_argument('--search_range', default=4, type=int,
                         help='The range around the UMI length to look for exact barcode matches if whitelist is provided.')
-    parser.add_argument('--min_qual', default=10, type=int,
+    parser.add_argument('--min_qual', default=15, type=int,
                         help='The minimum average quality across a barcode for it to be considered.')
     parser.add_argument('--exact_anchor', default=False,
                         help='Whether or not to enforce anchors must be one per read and at the exact position as expected')
@@ -42,7 +42,7 @@ def parse_args():
                         help='Optional output TSV path with sequence from the first barcode-search base through the polyT match.')
     parser.add_argument('--anchor_tail_filter', default=10, type=int,
                         help='The extremely long tail of spurious anchor matches has a detrimental impact on modeling the real anchor cutoff, so the tail is filtered by this value.')
-    parser.add_argument('--sensitivity', default=0.9, type=float,
+    parser.add_argument('--sensitivity', default=0.95, type=float,
                         help='The probabilty required from the NB mixture to be considered a true anchor.')
     parser.add_argument('--max_iter', default=200, type=int,
                         help='The maximum number of iterations for the EM step.')
@@ -54,8 +54,8 @@ def parse_args():
                         help='If set, keep only matches at the minimum hamming distance (including ties). By default, keep all matches within max_dist.')
     parser.add_argument('--kmer_size', default=5, type=int,
                         help='K-mer size used to prefilter anchors before Myers fallback (default: 5).')
-    parser.add_argument('--min_kmer_matches', default=5, type=int,
-                        help='Minimum shared k-mers required to compare a putative/anchor pair with Myers (default: 5).')
+    parser.add_argument('--min_kmer_matches', default=4, type=int,
+                        help='Minimum shared k-mers required to compare a putative/anchor pair with Myers (default: 4).')
     parser.add_argument('--max_myers_candidates', default=7, type=int,
                         help='Maximum number of candidate anchors to send into Myers after k-mer filtering (default: 7).')
     
@@ -95,10 +95,6 @@ if __name__ == '__main__':
                      max_iter=arguments.max_iter
                      )
 
-    with open('.anchor_freqs', 'w') as out:
-        for key, value in putative_anchors.items():
-            out.write(f'{key},{value}\n')
-    
     construct_graph_edges(
         putative_anchors,
         putative_barcodes,
