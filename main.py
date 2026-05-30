@@ -22,7 +22,7 @@ def parse_args():
                         help='Number of reads per worker batch (default: 1000).')
 
     # barcode extraction parameters
-    parser.add_argument('--polyT_min_length', default=10, type=int, 
+    parser.add_argument('--polyT_min_length', default=4, type=int, 
                         help='The minimum length required to identify a polyT(A) in the read.')
     parser.add_argument('--barcode_len', default=16, type=int,
                         help='The length of the barcode used to tag the cells.')
@@ -40,9 +40,9 @@ def parse_args():
                         help='Whether or not to enforce anchors must be one per read and at the exact position as expected')
     parser.add_argument('--upstream_region_tsv', default=None, type=str,
                         help='Optional output TSV path with sequence from the first barcode-search base through the polyT match.')
-    parser.add_argument('--anchor_tail_filter', default=10, type=int,
-                        help='The extremely long tail of spurious anchor matches has a detrimental impact on modeling the real anchor cutoff, so the tail is filtered by this value.')
-    parser.add_argument('--sensitivity', default=0.95, type=float,
+    parser.add_argument('--percentile_tail_filter', default=1, type=int,
+                        help='The extremely long tail of spurious anchor matches has a detrimental impact on modeling the real anchor cutoff, so the tail is filtered by this percentile value.')
+    parser.add_argument('--sensitivity', default=0.9, type=float,
                         help='The probabilty required from the NB mixture to be considered a true anchor.')
     parser.add_argument('--max_iter', default=200, type=int,
                         help='The maximum number of iterations for the EM step.')
@@ -52,11 +52,11 @@ def parse_args():
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
     parser.add_argument('--keep_best_match_only', action='store_true',
                         help='If set, keep only matches at the minimum hamming distance (including ties). By default, keep all matches within max_dist.')
-    parser.add_argument('--kmer_size', default=5, type=int,
-                        help='K-mer size used to prefilter anchors before Myers fallback (default: 5).')
-    parser.add_argument('--min_kmer_matches', default=4, type=int,
+    parser.add_argument('--kmer_size', default=4, type=int,
+                        help='K-mer size used to prefilter anchors before Myers fallback (default: 4).')
+    parser.add_argument('--min_kmer_matches', default=3, type=int,
                         help='Minimum shared k-mers required to compare a putative/anchor pair with Myers (default: 4).')
-    parser.add_argument('--max_myers_candidates', default=7, type=int,
+    parser.add_argument('--max_myers_candidates', default=10, type=int,
                         help='Maximum number of candidate anchors to send into Myers after k-mer filtering (default: 7).')
     
     # graph construction parameters
@@ -86,7 +86,7 @@ if __name__ == '__main__':
                      search_range=arguments.search_range,
                      min_qual=arguments.min_qual,
                      exact_anchor = arguments.exact_anchor,
-                     anchor_tail_filter = arguments.anchor_tail_filter,
+                     percentile_tail_filter = arguments.percentile_tail_filter,
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size,
