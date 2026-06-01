@@ -16,9 +16,10 @@ _BYTE_POPCOUNT_TABLE = np.array([bin(i).count('1') for i in range(256)], dtype=n
 
 class VectorizedBatchProcessor:
     """Worker class that processes batches of putative barcodes against encoded anchors."""
-    def __init__(self, max_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, anchor_myer_states, keep_best_match_only,
+    def __init__(self, max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, anchor_myer_states, keep_best_match_only,
                  kmer_size, min_kmer_matches, max_myers_candidates):
-        self.max_dist = max_dist
+        self.max_hamming_dist = max_hamming_dist
+        self.max_levenshtein_dist = max_levenshtein_dist
         self.anchor_barcodes = anchor_barcodes
         self.anchor_encoded = anchor_encoded
         self.anchor_kmer_index = anchor_kmer_index
@@ -107,7 +108,7 @@ class VectorizedBatchProcessor:
         results = []
         for _, anchor_idx in candidates:
             anchor_barcode, peq, last_bit, bit_mask, pattern_len = self.anchor_myer_states[anchor_idx]
-            dist = self.myers_levenshtein(putative_barcode, self.max_dist, peq, last_bit, bit_mask, pattern_len)
+            dist = self.myers_levenshtein(putative_barcode, self.max_levenshtein_dist, peq, last_bit, bit_mask, pattern_len)
             if dist:
                 results.append((anchor_barcode, dist))
         
@@ -120,7 +121,7 @@ class VectorizedBatchProcessor:
         for putative_barcode, put_freq in records_batch:
             encoded = encode_barcode(putative_barcode)
             distances = self.hamming_all(encoded, self.anchor_encoded)
-            valid_idx = np.flatnonzero(distances <= self.max_dist)
+            valid_idx = np.flatnonzero(distances <= self.max_hamming_dist)
 
             if valid_idx.size > 0:
                 used = 'hamming'
@@ -146,13 +147,14 @@ class VectorizedBatchProcessor:
         return local_out
 
 
-def _worker_init(max_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, anchor_myer_states, keep_best_match_only,
+def _worker_init(max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, anchor_myer_states, keep_best_match_only,
                  kmer_size, min_kmer_matches, max_myers_candidates):
     """
     Initialize per-process VectorizedBatchProcessor.
 
     Args:
-        max_dist (int):                    Maximum distance allowed for matches.
+        max_hamming_dist (int):                    Maximum distance allowed for matches.
+        max_levenshtein_dist (int):
         anchor_barcodes (tuple[str, ...]): Anchor barcode strings.
         anchor_encoded (np.ndarray):       Anchor barcode encodings (uint32).
         anchor_kmer_index
@@ -167,7 +169,8 @@ def _worker_init(max_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, a
     """
     global _worker_processor
     _worker_processor = VectorizedBatchProcessor(
-        max_dist,
+        max_hamming_dist,
+        max_levenshtein_dist,
         anchor_barcodes,
         anchor_encoded,
         anchor_kmer_index,
@@ -262,14 +265,14 @@ def encode_barcode(barcode: str) -> int:
     return x
 
 
-def calculate_anchor_neighborhoods(putative_barcodes, max_dist):
+def calculate_anchor_neighborhoods(putative_barcodes, max_hamming_dist):
     """
     Takes the putative barcodes associated with a single anchor and calculate the
     hamming distance between them all.
 
     Args:
         putative_barcodes (list): List of tuples, (barcode, encoded) for each putative for an anchor
-        max_dist (int):          Maximum allowed hamming distance to create an edge
+        max_hamming_dist (int):          Maximum allowed hamming distance to create an edge
 
     Returns:
         list: graph edges for each barcode pair
@@ -277,7 +280,7 @@ def calculate_anchor_neighborhoods(putative_barcodes, max_dist):
     edges = []
     for (barcode1, encoded1, freq1), (barcode2, encoded2, freq2) in combinations(putative_barcodes, 2):
         dist = hamming(encoded1, encoded2)
-        if dist > max_dist:
+        if dist > max_hamming_dist:
             continue
         # weight = (math.sqrt((freq1 + freq2)/2) * (2 ** -dist))
         #weight = (np.exp(-1*dist))
@@ -367,7 +370,7 @@ def combine_batch_results(results_batch, combined_result, anchors: dict[str, int
     return combined_result
 
 
-def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], max_dist: int, barcode_len: int,
+def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], max_hamming_dist: int, max_levenshtein_dist: int, barcode_len: int,
                           processes: int = None, batch_size: int = 10000, keep_best_match_only: bool = False,
                           kmer_size: int = 4, min_kmer_matches: int = 3, max_myers_candidates: int = 7):
     """
@@ -376,7 +379,8 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     Args:
         anchors (dict):         Anchor barcode -> frequency mapping.
         putatives (dict):       Putative barcode -> frequency mapping.
-        max_dist (int):         Largest acceptable distance.
+        max_hamming_dist (int):         Largest acceptable distance.
+        max_levenshtein_dist (int):
         barcode_len (int):      Length of the barcode.
         processes (int):        Number of worker processes (defaults to cpu_count()-1).
         batch_size (int):       Number of putative barcodes to send per worker task.
@@ -429,7 +433,8 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                 kmer_size, min_kmer_matches, max_myers_candidates)
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
                                       initargs=(
-                                          max_dist,
+                                          max_hamming_dist,
+                                          max_levenshtein_dist,
                                           anchor_barcodes,
                                           anchor_encoded,
                                           anchor_kmer_index,
@@ -466,7 +471,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
 
         for anchor, putatives_set in combined_result['anchor_neighborhood'].items():
             # Convert set to list for calculate_anchor_neighborhoods
-            neighborhood_edges = calculate_anchor_neighborhoods(list(putatives_set), max_dist)
+            neighborhood_edges = calculate_anchor_neighborhoods(list(putatives_set), max_hamming_dist)
             for neighborhood_edge in neighborhood_edges:
                 barcode1, barcode2 = canonical_edge(neighborhood_edge[0], neighborhood_edge[1])
                 combined_result['graph_edges'].append((barcode1, barcode2, neighborhood_edge[2]))
