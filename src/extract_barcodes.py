@@ -187,9 +187,9 @@ class BarcodeBatchProcessor:
         return putative_barcodes, putative_umis, putative_position, anchor, anchor_umi, quality_filtered
 
     
-    def _longest_polyt_run(self, seq: str):
+    def _polyt_search(self, seq: str):
         """
-        Find the location of the longest polyT in a read. Returns the position and length
+        Find the location of the polyT in a read. Returns the position and length
         if it mets the minimum length
 
         Args:
@@ -199,36 +199,70 @@ class BarcodeBatchProcessor:
             int: position of the polyT start site
             int: length of the polyT
         """
-        best_start = None
+        # initialize
+        end_trim = 2
+        score = 0.0
+        best_score = 0.0
+        best_start = 0
         best_len = 0
+        trailing_t = 0
+        best_valid_end = -1  # last position where trailing T is strong
+        i = 0
 
-        curr_start = None
-        curr_len = 0
-    
-        for i, c in enumerate(seq):
-            if c == "T":
-                if curr_start is None:
-                    curr_start = i
-                    curr_len = 1
-                else:
-                    curr_len += 1
+        while i < len(seq):
+            if score == 0:
+                if seq[i:i + self.polyt_min_length] != "T" * self.polyt_min_length:
+                    i += 1
+                    continue
 
-                if curr_len > best_len:
-                    best_start = curr_start
-                    best_len = curr_len
+                current_start = i
+                current_len = self.polyt_min_length
+                score = self.polyt_min_length
+
+                trailing_t = self.polyt_min_length
+                best_valid_end = i + self.polyt_min_length - 1
+
+                if score > best_score:
+                    best_score = score
+                    best_start = current_start
+                    best_len = current_len
+
+                i += self.polyt_min_length
             else:
-                curr_start = None
-                curr_len = 0
+                if seq[i] == "T":
+                    score += 1
+                    current_len += 1
+                    trailing_t += 1
+                else:
+                    score -= 2.5
+                    current_len += 1
+                    trailing_t = 0
 
-        if best_len < self.polyt_min_length:
-            return 0, 0
+                # record valid endpoints when trailing T is strong enough
+                if trailing_t >= end_trim:
+                    best_valid_end = i
+
+                if score <= 0:
+                    score = 0
+                    current_len = 0
+                    trailing_t = 0
+                    best_valid_end = -1
+                else:
+                    if best_valid_end != -1:
+                        curr_len = best_valid_end - current_start + 1
+                        if score > best_score:
+                            best_score = score
+                            best_start = current_start
+                            best_len = curr_len
+
+                i += 1
 
         return best_start, best_len
 
 
     def _find_upstream(self, sequence: str, qual: str):
         """
-        Find and eturn the subsequence upstream of the polyT.
+        Find and return the subsequence upstream of the polyT.
 
         Args:
             sequence (str): Full read sequence.
@@ -243,10 +277,10 @@ class BarcodeBatchProcessor:
         reverse_qual = qual[::-1]
 
         # --- forward ---
-        f_start, f_len = self._longest_polyt_run(sequence[:300])
+        f_start, f_len = self._polyt_search(sequence[:300])
 
         # --- reverse ---
-        r_start, r_len = self._longest_polyt_run(reverse_seq[:300])
+        r_start, r_len = self._polyt_search(reverse_seq[:300])
 
         if f_len > 0 and f_len > r_len:
             polyt_start = f_start
@@ -266,7 +300,7 @@ class BarcodeBatchProcessor:
             search_to_polyt_region = upstream_tail[
                 -(self.barcode_len + self.umi_len + self.search_range):
             ]
-            read = reverse_seq[polyt_start + f_len:]
+            read = reverse_seq[polyt_start + r_len:]
 
         elif f_len > 0 and f_len == r_len:
             polyt_start = f_start
