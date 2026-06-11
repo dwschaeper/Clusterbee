@@ -24,7 +24,7 @@ class BarcodeBatchProcessor:
     """
 
     def __init__(self, polyt_min_length: int, barcode_len: int, umi_len: int, search_range: int,
-                 min_qual: int, whitelist: set, exact_anchor: bool, write_upstream_region: bool = False):
+                 min_qual: int, whitelist: set, write_upstream_region: bool = False):
         """
         Initialize the processor with parameters for barcode extraction.
 
@@ -35,7 +35,6 @@ class BarcodeBatchProcessor:
             search_range (int):           The range around the UMI length to look for exact matches
             min_qual (int):               The minimum average quality in a barcode for it to be considered
             whitelist (set):              The whitelist of cell barcodes
-            exact_anchor (bool):          Whether or not to enforce anchors must be one per read and at the exact position as expected
             write_upstream_region (bool): Whether to emit trimmed upstream sequence lines for output
         """
         self.barcode_len = barcode_len
@@ -43,7 +42,6 @@ class BarcodeBatchProcessor:
         self.search_range = search_range
         self.min_qual = min_qual
         self.whitelist = whitelist
-        self.exact_anchor = exact_anchor
         self.write_upstream_region = write_upstream_region
         self.polyt_min_length = polyt_min_length
 
@@ -67,7 +65,7 @@ class BarcodeBatchProcessor:
         local_anchor_lines = []
         local_upstream_region_lines = []
         reads = defaultdict(str)
-        local_putative_freq = Counter()
+        local_putatives = defaultdict(set)
         local_anchor_freq = Counter()
         local_polya = 0
         local_no_polya = 0
@@ -84,21 +82,20 @@ class BarcodeBatchProcessor:
                 reads[record[0]] = read
                 if self.write_upstream_region:
                     local_upstream_region_lines.append(f'{record[0]}\t{search_to_polyt_region}\n')
-                putative_barcodes, putative_umis, putative_position, anchor, anchor_umi, quality_filtered = self._extract_putatives(
-                    upstream_tail,
-                    upstream_qual)
+
+                putative_barcodes, putative_umis, putative_position, anchors, anchor_umis, quality_filtered = self._extract_putatives(upstream_tail, upstream_qual)
 
                 for barcode, umi, pos in zip(putative_barcodes, putative_umis, putative_position):
                     local_putative_lines.append(f'{record[0]}\t{barcode}\t{umi}\t{pos}\n')
-                    local_putative_freq[barcode] += 1
-                if anchor is not None:
+                    local_putatives[record[0]].add(barcode)
+                for anchor, anchor_umi in zip(anchors, anchor_umis):
                     local_anchor_lines.append(f'{record[0]}\t{anchor}\t{anchor_umi}\n')
                     local_anchor_freq[anchor] += 1
                     local_anchor += 1
                 if quality_filtered > 0:
                     local_quality_filtered_reads += 1
                     local_quality_filtered_barcodes += quality_filtered
-                if anchor is None and putative_barcodes:
+                if not anchors and putative_barcodes:
                     local_only_putative_reads += 1
 
             else:
@@ -109,7 +106,7 @@ class BarcodeBatchProcessor:
                 'local_putative_lines': local_putative_lines,
                 'local_anchor_lines': local_anchor_lines,
                 'local_upstream_region_lines': local_upstream_region_lines,
-                'local_putative_freq':local_putative_freq,
+                'local_putatives':local_putatives,
                 'local_anchor_freq': local_anchor_freq,
                 'local_polya': local_polya,
                 'local_no_polya': local_no_polya,
@@ -150,8 +147,8 @@ class BarcodeBatchProcessor:
         putative_barcodes = []
         putative_umis = []
         putative_position = []
-        anchor = None
-        anchor_umi = None
+        anchors = []
+        anchor_umis = []
         quality_filtered = 0
         upstream_tail_len = len(upstream_tail)
 
@@ -169,14 +166,9 @@ class BarcodeBatchProcessor:
             if self._avg_qual(checker_qual) < self.min_qual:
                 quality_filtered += 1
                 continue
-            if not self.exact_anchor:
-                if checker in self.whitelist:
-                    anchor = checker
-                    anchor_umi = umi
-            else:
-                if i == expected_pos and checker in self.whitelist:
-                    anchor = checker
-                    anchor_umi = umi
+            if checker in self.whitelist:
+                anchors.append(checker)
+                anchor_umis.append(umi)
             putative_barcodes.append(checker)
             putative_position.append(i - expected_pos)
             # add T's to the UMI when too short from running the window upstream and including the identified polyT in the UMI
@@ -184,7 +176,7 @@ class BarcodeBatchProcessor:
                 umi = umi + 'T'
             putative_umis.append(umi)
 
-        return putative_barcodes, putative_umis, putative_position, anchor, anchor_umi, quality_filtered
+        return putative_barcodes, putative_umis, putative_position, anchors, anchor_umis, quality_filtered
 
     
     def _polyt_search(self, seq: str):
@@ -207,6 +199,8 @@ class BarcodeBatchProcessor:
         best_len = 0
         trailing_t = 0
         best_valid_end = -1  # last position where trailing T is strong
+        mismatches = 0
+        best_mismatches = 0
         i = 0
 
         while i < len(seq):
@@ -234,9 +228,10 @@ class BarcodeBatchProcessor:
                     current_len += 1
                     trailing_t += 1
                 else:
-                    score -= 2.5
+                    score -= 2
                     current_len += 1
                     trailing_t = 0
+                    mismatches += 1
 
                 # record valid endpoints when trailing T is strong enough
                 if trailing_t >= end_trim:
@@ -247,6 +242,7 @@ class BarcodeBatchProcessor:
                     current_len = 0
                     trailing_t = 0
                     best_valid_end = -1
+                    mismatches = 0
                 else:
                     if best_valid_end != -1:
                         curr_len = best_valid_end - current_start + 1
@@ -254,10 +250,11 @@ class BarcodeBatchProcessor:
                             best_score = score
                             best_start = current_start
                             best_len = curr_len
+                            best_mismatches = mismatches
 
                 i += 1
 
-        return best_start, best_len
+        return best_start, best_len, best_score, best_mismatches
 
 
     def _find_upstream(self, sequence: str, qual: str):
@@ -277,12 +274,27 @@ class BarcodeBatchProcessor:
         reverse_qual = qual[::-1]
 
         # --- forward ---
-        f_start, f_len = self._polyt_search(sequence[:300])
+        f_start, f_len, f_score, f_mismatches = self._polyt_search(sequence[10:160])
+        f_start += 10
 
         # --- reverse ---
-        r_start, r_len = self._polyt_search(reverse_seq[:300])
+        r_start, r_len, r_score, r_mismatches = self._polyt_search(reverse_seq[10:160])
+        r_start += 10
 
-        if f_len > 0 and f_len > r_len:
+        # don't consider those that start too close to the end of the read
+        if f_start + f_len <= f_len + self.umi_len + self.barcode_len:
+            f_score = 0
+        if r_start + r_len <= r_len + self.umi_len + self.barcode_len:
+            r_score = 0
+
+        # don't consider those that have too many mismatches
+        #if f_mismatches > 0 and f_mismatches / f_len > 0.1:
+        #    f_score = 0
+        #if r_mismatches > 0 and r_mismatches / r_len > 0.1:
+        #    r_score = 0
+
+        # pick the best score
+        if f_score > 0 and f_score > r_score:
             polyt_start = f_start
             upstream_tail = sequence[:polyt_start]
             upstream_qual = qual[:polyt_start]
@@ -292,7 +304,7 @@ class BarcodeBatchProcessor:
             ]
             read = sequence[polyt_start + f_len:]
 
-        elif r_len> 0 and r_len > f_len:
+        elif r_score > 0 and r_score > f_score:
             polyt_start = r_start
             upstream_tail = reverse_seq[:polyt_start]
             upstream_qual = reverse_qual[:polyt_start]
@@ -302,7 +314,7 @@ class BarcodeBatchProcessor:
             ]
             read = reverse_seq[polyt_start + r_len:]
 
-        elif f_len > 0 and f_len == r_len:
+        elif f_score > 0 and f_score == r_score:
             polyt_start = f_start
             upstream_tail = sequence[:polyt_start]
             upstream_qual = qual[:polyt_start]
@@ -321,7 +333,7 @@ class BarcodeBatchProcessor:
         return upstream_tail, upstream_qual, search_to_polyt_region, read
 
 
-def _worker_init(polyt_min_length, barcode_len, umi_len, search_range, min_qual, whitelist, exact_anchor,
+def _worker_init(polyt_min_length, barcode_len, umi_len, search_range, min_qual, whitelist,
                  write_upstream_region):
     """
     Initializer executed in each worker process to set up a local processor.
@@ -334,12 +346,11 @@ def _worker_init(polyt_min_length, barcode_len, umi_len, search_range, min_qual,
         search_range (int):     The range around the UMI length to look for exact matches
         min_qual (int):         The minimum average quality in a barcode for it to be considered
         whitelist (set):        The whitelist of cell barcodes
-        exact_anchor (bool):    Whether or not to enforce anchors must be one per read and at the exact position as expected
         write_upstream_region (bool): Whether to emit trimmed upstream sequence lines for output
     """
     global _worker_processor
     _worker_processor = BarcodeBatchProcessor(polyt_min_length, barcode_len, umi_len, search_range,
-                                              min_qual, whitelist, exact_anchor,
+                                              min_qual, whitelist,
                                               write_upstream_region=write_upstream_region)
 
 
@@ -518,7 +529,7 @@ def plot_anchors(anchor_counter, probs_real, cutoff, sensitivity):
 
 
 def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_len: int,
-                     search_range: int, min_qual: int, exact_anchor: bool, percentile_tail_filter: int,
+                     search_range: int, min_qual: int, percentile_tail_filter: int,
                      whitelist: set = None, processes: int = None, batch_size: int = 10000,
                      upstream_region_tsv: str = None, sensitivity=0.9, max_iter=200):
     """
@@ -531,7 +542,6 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
         umi_len (int):                   The length of the UMI used
         search_range (int):              The range around the UMI length to look for exact matches
         min_qual (int):                  The minimum average quality in a barcode for it to be considered
-        exact_anchor (bool):             Whether or not to enforce anchors must be one per read and at the exact position as expected
         percentile_tail_filter (int):    The cutoff threshold for filtering the long tail before NB EM
         whitelist (set):                 The whitelist of cell barcodes that are expected as a set for quick accession
         processes (int):                 Number of worker processes (defaults to cpu_count() - 1)
@@ -548,6 +558,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     logger.info('Beginning extraction')
     putative_anchors_freq = defaultdict(int)
     putative_barcodes_freq = defaultdict(int)
+    putative_barcodes = defaultdict(set)
     reads_lookup = defaultdict(str)
     polya_found_reads = 0
     no_polya_found_reads = 0
@@ -570,7 +581,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     # start a process pool — use an initializer so each worker creates its own BarcodeBatchProcessor
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
                                       initargs=(polyt_min_length, barcode_len, umi_len, search_range,
-                                                min_qual, whitelist, exact_anchor, upstream_region_tsv is not None))
+                                                min_qual, whitelist, upstream_region_tsv is not None))
 
     optional_upstream_cm = open(upstream_region_tsv, 'w') if upstream_region_tsv is not None else nullcontext(None)
 
@@ -607,8 +618,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                     if upstream_region_file is not None:
                         for line in result_dict['local_upstream_region_lines']:
                             upstream_region_file.write(line)
-                    for k, v in result_dict['local_putative_freq'].items():
-                        putative_barcodes_freq[k] += v
+                    putative_barcodes.update(result_dict['local_putatives'])
                     for k, v in result_dict['local_anchor_freq'].items():
                         putative_anchors_freq[k] += v
 
@@ -644,8 +654,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
                 if upstream_region_file is not None:
                     for line in result_dict['local_upstream_region_lines']:
                         upstream_region_file.write(line)
-                for k, v in result_dict['local_putative_freq'].items():
-                    putative_barcodes_freq[k] += v
+                putative_barcodes.update(result_dict['local_putatives'])
                 for k, v in result_dict['local_anchor_freq'].items():
                     putative_anchors_freq[k] += v
 
@@ -677,6 +686,18 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cutoff}
     logger.info('The number of anchors after filtering is: %d', len(putative_anchors_freq))
 
+    # clean putative barcodes so that a read with an anchor is not needlessly scanned
+    search_reads = 0
+    filtered_anchors = set(putative_anchors_freq.keys())
+    ids_with_putatives = set(putative_barcodes.keys())
+    for read_id in ids_with_putatives:
+        if not putative_barcodes[read_id].isdisjoint(filtered_anchors):
+            del putative_barcodes[read_id]
+        else:
+            search_reads += 1
+            for barcode in putative_barcodes[read_id]:
+                putative_barcodes_freq[barcode] += 1
+
     # log information
     logger.info('Total reads processed: %d', processed)
     logger.info('polyA+ reads found: %d', polya_found_reads)
@@ -688,6 +709,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, barcode_len: int, umi_le
     logger.info('Maximum recoverable reads: %d', reads_with_putative_anchor_count + only_putative_barcodes)
     logger.info('Number of anchor barcodes after filter: %d', len(putative_anchors_freq))
     logger.info('Number of unique putative barcodes: %d', len(putative_barcodes_freq))
+    logger.info('Number of reads that will be searched for a non-perfect anchor match: %d', search_reads)
 
     putative_anchors_freq = dict(sorted(putative_anchors_freq.items()))
     putative_barcodes_freq = dict(sorted(putative_barcodes_freq.items()))
