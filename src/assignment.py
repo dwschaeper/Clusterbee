@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 _worker_barcode_to_community = None
 _worker_valid_barcodes = None
 _worker_reads_lookup = None
+_worker_anchor_set = None
 _worker_pigz_threads = None
 
 
@@ -27,12 +28,12 @@ def _write_fasta_shard(read_assignment, worker_id):
     append = buf.append
     flush_threshold = 100000
 
-    for read_id, (barcode, community) in read_assignment.items():
+    for read_id, (barcode, community, community_anchor_list) in read_assignment.items():
         seq = _worker_reads_lookup.get(read_id)
         if seq is None:
             continue
 
-        append(f">{read_id}|barcode={barcode}|community={community}\n{seq}")
+        append(f">{read_id}|barcode={barcode}|community={community}|community_anchor={';'.join(community_anchor_list)}\n{seq}")
 
         if len(buf) >= flush_threshold:
             proc.stdin.write("\n".join(buf) + "\n")
@@ -56,44 +57,62 @@ def _worker_process_batch(args):
 
     for read_id, group in groupby(chunk, key=lambda x: x.split('\t', 1)[0]):
         rows = [line.rstrip('\n').split('\t') for line in group]
-
+        
+        anchor_matches = []
         matches = []
         for row in rows:
             barcode = row[1]
             location_rank = int(row[3])
 
-            if barcode in _worker_valid_barcodes:
+            if barcode in _worker_valid_barcodes and barcode in _worker_anchor_set:
+                community = _worker_barcode_to_community[barcode]
+                anchor_matches.append((location_rank, barcode, community))
+            elif barcode in _worker_valid_barcodes:
                 community = _worker_barcode_to_community[barcode]
                 matches.append((location_rank, barcode, community))
 
-        # if only one match, assign
-        if len(matches) == 1:
+        # if only one anchor match, assign
+        if len(anchor_matches) == 1:
+            _, barcode, community = anchor_matches[0]
+
+        # if only one match and non-anchor,
+        elif len(matches) == 1:
             _, barcode, community = matches[0]
 
-        # if multiple, take best position
+        # if multiple anchor, take best position
+        elif len(anchor_matches) > 1:
+            location_rank, barcode, community = sorted(anchor_matches, key=lambda x: (abs(x[0]), x[0]))[0]
+        
+        # if multiple non-anchor, take best position
         elif len(matches) > 1:
             location_rank, barcode, community = sorted(matches, key=lambda x: (abs(x[0]), x[0]))[0]
+
+        # if no matches continue, won't happen unless catastrophic issue
         else:
             continue
 
         local_cell_membership[community].add(read_id)
         local_cell_sizes[community] += 1
-        read_assignment[read_id] = (barcode, community)
+        read_assignment[read_id] = (barcode, community, _worker_community_to_anchor[community])
 
     shard = _write_fasta_shard(read_assignment, worker_id)
 
     return local_cell_membership, local_cell_sizes, shard
 
 
-def _worker_init(barcode_to_community, valid_barcodes, reads_lookup, pigz_threads):
+def _worker_init(barcode_to_community, community_to_anchor, valid_barcodes, reads_lookup, anchor_set, pigz_threads):
     global _worker_barcode_to_community
+    global _worker_community_to_anchor
     global _worker_valid_barcodes
     global _worker_reads_lookup
+    global _worker_anchor_set
     global _worker_pigz_threads
 
     _worker_barcode_to_community = barcode_to_community
+    _worker_community_to_anchor = community_to_anchor
     _worker_valid_barcodes = valid_barcodes
     _worker_reads_lookup = reads_lookup
+    _worker_anchor_set = anchor_set
     _worker_pigz_threads = pigz_threads
 
 
@@ -101,36 +120,38 @@ def _submit_batch(executor, chunk, worker_id):
     return executor.submit(_worker_process_batch, (chunk, worker_id))
 
 
-def assignment(graph_data, reads_lookup, processes=None, batch_size=10000, max_pending=7):
+def assignment(graph_data, reads_lookup, anchor_set, processes=None, batch_size=10000, max_pending=7):
     # initialize variables
-    barcode_to_community = dict(zip(graph_data['name'], graph_data['community']))
+    barcode_to_community = defaultdict(str)
+    community_to_anchor = defaultdict(list)
+    for barcode, community in zip(graph_data['name'], graph_data['community']):
+        barcode_to_community[barcode] = community
+        if barcode in anchor_set:
+            community_to_anchor[community].append(barcode)
     valid_barcodes = set(barcode_to_community.keys())
     cell_membership = defaultdict(set)
     cell_sizes = defaultdict(int)
+    used_ids = set()
     shard_files = []
     if processes == None:
         processes = os.cpu_count() - 1
     pending = set()
     worker_id = 0
     logger.info('Starting assignment')
-    with ProcessPoolExecutor(max_workers=processes, initializer=_worker_init, initargs=(barcode_to_community, valid_barcodes, reads_lookup, 1)) as executor, open('.putative_barcodes', 'r') as file:
+    with ProcessPoolExecutor(max_workers=processes, initializer=_worker_init, initargs=(barcode_to_community, community_to_anchor, valid_barcodes, reads_lookup, anchor_set, 1)) as executor, open('.putative_barcodes', 'r') as file:
         batch = []
-        current_read = None
+        prior_read = None
 
         for line in file:
-            read_id = line.split('\t', 1)[0]
-
-            if current_read is None:
-                current_read = read_id
+            current_read = line.split('\t', 1)[0]
 
             # make and submit batches
-            if read_id != current_read and len(batch) >= batch_size:  # ensure the putatives for all reads are within a single batch
+            if current_read != prior_read and len(batch) >= batch_size:  # ensure the putatives for all reads are within a single batch
                 future = _submit_batch(executor, batch, worker_id)
                 pending.add(future)
                 worker_id += 1
 
                 batch = []
-                current_read = read_id
 
                 if len(pending) >= max_pending:
                     completed = []
@@ -153,6 +174,7 @@ def assignment(graph_data, reads_lookup, processes=None, batch_size=10000, max_p
                         pending.remove(fut)
 
             batch.append(line)
+            prior_read = current_read
 
         # submit final chunk and process it
         if batch:
