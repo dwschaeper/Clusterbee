@@ -46,6 +46,7 @@ class BarcodeBatchProcessor:
         self.whitelist = whitelist
         self.write_upstream_region = write_upstream_region
         self.polyt_min_length = polyt_min_length
+        self.buffer_dist = self.barcode_len + self.umi_len
 
     def process(self, records_batch):
         """
@@ -102,6 +103,9 @@ class BarcodeBatchProcessor:
                 r_putative_barcodes, r_putative_umis, r_putative_position, r_anchors, r_anchor_umis, r_quality_filtered = self._extract_putatives(
                     matching_data['r_upstream_tail'], matching_data['r_upstream_qual'])
 
+                forward_len_diff = abs(len(matching_data['f_upstream_tail']) - (self.barcode_len + self.umi_len))
+                reverse_len_diff = abs(len(matching_data['r_upstream_tail']) - (self.barcode_len + self.umi_len))
+
                 # if only one orientation has an anchor, choose that
                 if f_anchors and not r_anchors:
                     local_anchor_decided += 1
@@ -117,6 +121,26 @@ class BarcodeBatchProcessor:
                         local_quality_filtered_barcodes += f_quality_filtered
                 elif not f_anchors and r_anchors:
                     local_anchor_decided += 1
+                    for barcode, umi, pos in zip(r_putative_barcodes, r_putative_umis, r_putative_position):
+                        local_putative_lines.append(f'{record[0]}\t{barcode}\t{umi}\t{pos}\n')
+                        local_putatives[record[0]].add(barcode)
+                    for anchor, anchor_umi in zip(r_anchors, r_anchor_umis):
+                        local_anchor_lines.append(f'{record[0]}\t{anchor}\t{anchor_umi}\n')
+                        local_anchor_freq[anchor] += 1
+                        local_anchor += 1
+                    if r_quality_filtered > 0:
+                        local_quality_filtered_reads += 1
+                        local_quality_filtered_barcodes += r_quality_filtered
+                # choose the one with the proper length
+                elif forward_len_diff < reverse_len_diff:
+                    for barcode, umi, pos in zip(f_putative_barcodes, f_putative_umis, f_putative_position):
+                        local_putative_lines.append(f'{record[0]}\t{barcode}\t{umi}\t{pos}\n')
+                        local_putatives[record[0]].add(barcode)
+                    for anchor, anchor_umi in zip(f_anchors, f_anchor_umis):
+                        local_anchor_lines.append(f'{record[0]}\t{anchor}\t{anchor_umi}\n')
+                        local_anchor_freq[anchor] += 1
+                        local_anchor += 1
+                elif reverse_len_diff < forward_len_diff:
                     for barcode, umi, pos in zip(r_putative_barcodes, r_putative_umis, r_putative_position):
                         local_putative_lines.append(f'{record[0]}\t{barcode}\t{umi}\t{pos}\n')
                         local_putatives[record[0]].add(barcode)
@@ -239,10 +263,7 @@ class BarcodeBatchProcessor:
             if len(checker) != self.barcode_len:
                 quality_filtered += 1
                 continue
-            if self._avg_qual(checker_qual) < self.min_qual:
-                quality_filtered += 1
-                continue
-            if checker in self.whitelist:
+            if checker in self.whitelist and self._avg_qual(checker_qual) >= self.min_qual:
                 anchors.append(checker)
                 anchor_umis.append(umi)
             putative_barcodes.append(checker)
@@ -268,6 +289,7 @@ class BarcodeBatchProcessor:
             best_mismatches (int): mismatch count of best match
         """
         max_mismatches = 2
+        upstream_len = len(seq)
 
         aln = edlib.align(self.adapter, seq, mode='HW', task='locations', k=max_mismatches)
         edit_dist = aln['editDistance']
@@ -276,7 +298,20 @@ class BarcodeBatchProcessor:
         if edit_dist == -1:
             return False, -1, -1, max_mismatches + 1
 
-        start, end = aln['locations'][0]
+        # start, end = aln['locations'][-1]
+        start = None
+        end = None
+        current_len = None
+        for location in aln['locations']:
+            if end == None:
+                start = location[0]
+                end = location[1]
+                current_len = upstream_len - end
+            elif abs(current_len  - self.buffer_dist) > abs((upstream_len - location[1]) - self.buffer_dist):
+                start = location[0]
+                end = location[1]
+                current_len = upstream_len - end
+
         return True, start + 1, end + 1, edit_dist
 
     def _polyt_search(self, seq: str):
@@ -399,7 +434,7 @@ class BarcodeBatchProcessor:
                      }
 
         # forward strand
-        f_start, f_len, f_score, f_mismatches = self._polyt_search(sequence[buffer_bases:160])
+        f_start, f_len, f_score, f_mismatches = self._polyt_search(sequence[buffer_bases:250])
         f_start += buffer_bases
         if f_score > 0:
             f_adapter_found, f_adapter_start, f_adapter_end, f_adapter_mismatches = self._adapter_search(
@@ -414,7 +449,7 @@ class BarcodeBatchProcessor:
             returning['f_adatper_mismatches'] = f_adapter_mismatches
 
         # reverse strand
-        r_start, r_len, r_score, r_mismatches = self._polyt_search(reverse_seq[buffer_bases:160])
+        r_start, r_len, r_score, r_mismatches = self._polyt_search(reverse_seq[buffer_bases:250])
         r_start += buffer_bases
         if r_score > 0:
             r_adapter_found, r_adapter_start, r_adapter_end, r_adapter_mismatches = self._adapter_search(
@@ -439,8 +474,8 @@ class BarcodeBatchProcessor:
             returning['f_read'] = read
 
         if r_score > 0 and r_adapter_found:
-            upstream_tail = reverse_seq[r_adapter_end - self.search_range:r_start + self.search_range]
-            upstream_qual = reverse_qual[r_adapter_end - self.search_range:r_start + self.search_range]
+            upstream_tail = reverse_seq[r_adapter_end: r_start + self.search_range]
+            upstream_qual = reverse_qual[r_adapter_end: r_start + self.search_range]
             read = sequence[r_start + r_len:]
 
             returning['r_upstream_tail'] = upstream_tail
@@ -518,7 +553,11 @@ def estimate_nb_params(vals, weights):
         int: r value
         int: p value
     """
-    w = weights / weights.sum()
+    weight_sum = weights.sum()
+    if weight_sum <= 0:
+        w = np.full(len(vals), 1.0 / len(vals), dtype=float)
+    else:
+        w = weights / weight_sum
     mean = np.sum(w * vals)
     var = np.sum(w * (vals - mean) ** 2)
     var = max(var, mean + 1e-3)  # don't allow it to be too low
@@ -527,65 +566,84 @@ def estimate_nb_params(vals, weights):
     r = max(r, 1e-3)
 
     p = r / (r + mean)
+    p = float(np.clip(p, 1e-6, 1 - 1e-6))
 
     return r, p
 
 
-def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv='anchor_probabilities.csv'):
+def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_strength=500, max_iter=200, tol=1e-6, output_csv='anchor_probabilities.csv'):
     """
-    Deterministic NB mixture with sensitivity-controlled threshold + CSV output.
+    Deterministic 3-component NB mixture with sensitivity-controlled threshold + CSV output.
 
     Args:
-        anchor_counter (dict): barcode -> count
-        sensitivity (float): threshold on P(real | x)
-        max_iter (int): EM iterations
-        tol (float): convergence tolerance
-        output_csv (str or None): path to write barcode probabilities
+        anchor_counter (dict):        Barcode -> count
+        sensitivity (float):          Threshold on P(real | x)
+        expected_cells (int or None): The number of cells that were expected to be sequenced
+        max_iter (int):               EM iterations
+        tol (float):                  convergence tolerance
+        output_csv (str or None):     path to write barcode probabilities
 
     Returns:
-        dict with same structure as before
+        dict with the same external structure as before
     """
     x = np.array(sorted(anchor_counter.values(), reverse=True), dtype=float)
-
-    expected_cells = 1000
-    prior_strength = 500
-
-    # initialization
-    median = np.median(x)
-    z = (x > median).astype(float)
-
     n = len(x)
 
+    # initialization: top-ranked counts seed the real component, middle ranks the weak component,
+    # and the tail seeds the noise component.
+    ranks = np.arange(n)
+    real_cut = max(1, n // 3)
+    weak_cut = max(real_cut + 1, (2 * n) // 3)
+    z_noise = (ranks >= weak_cut).astype(float)
+    z_weak = ((ranks >= real_cut) & (ranks < weak_cut)).astype(float)
+    z_real = (ranks < real_cut).astype(float)
+
     if expected_cells is not None:
-            expected_fraction = min(max(expected_cells / n, 1e-6), 1 - 1e-6)
-
-            alpha = expected_fraction * prior_strength
-            beta = (1 - expected_fraction) * prior_strength
-
-            pi = expected_fraction
+        # original approach: use fractions of prior_strength
+        # expected_fraction = min(max(expected_cells / n, 1e-6), 1 - 1e-6)
+        # non_real_fraction = (1 - expected_fraction) / 2
+        # alpha = np.array([non_real_fraction, non_real_fraction, expected_fraction], dtype=float) * prior_strength
+        # pi = alpha / alpha.sum()
+        
+        # new approach: weak prior = expected_cells + 1
+        alpha = np.array([
+            expected_cells / 2,           # noise prior
+            expected_cells + 1,           # weak prior
+            expected_cells                # real prior
+        ], dtype=float)
+        pi = alpha / alpha.sum()
     else:
-        alpha = beta = None
-        pi = z.mean()
+        alpha = np.ones(3, dtype=float)
+        pi = np.array([z_noise.mean(), z_weak.mean(), z_real.mean()], dtype=float)
+        pi = np.clip(pi, 1e-6, None)
+        pi = pi / pi.sum()
 
-    r1, p1 = estimate_nb_params(x, 1 - z + 1e-3)
-    r2, p2 = estimate_nb_params(x, z + 1e-3)
+    r_noise, p_noise = estimate_nb_params(x, z_noise + 1e-3)
+    r_weak, p_weak = estimate_nb_params(x, z_weak + 1e-3)
+    r_real, p_real = estimate_nb_params(x, z_real + 1e-3)
 
     prev_ll = -np.inf
 
     for _ in range(max_iter):
-        log_prob1 = np.log(1 - pi) + nbinom.logpmf(x, r1, p1)
-        log_prob2 = np.log(pi) + nbinom.logpmf(x, r2, p2)
+        log_probs = np.vstack([
+            np.log(pi[0]) + nbinom.logpmf(x, r_noise, p_noise),
+            np.log(pi[1]) + nbinom.logpmf(x, r_weak, p_weak),
+            np.log(pi[2]) + nbinom.logpmf(x, r_real, p_real),
+        ])
 
-        denom = logsumexp([log_prob1, log_prob2], axis=0)
-        gamma = np.exp(log_prob2 - denom)
+        denom = logsumexp(log_probs, axis=0)
+        gamma = np.exp(log_probs - denom)
 
         if expected_cells is not None:
-            pi = (gamma.sum() + alpha - 1) / (len(gamma) + alpha + beta - 2)
+            pi = (gamma.sum(axis=1) + alpha - 1) / (len(x) + alpha.sum() - len(alpha))
         else:
-            pi = gamma.mean()
+            pi = gamma.mean(axis=1)
+        pi = np.clip(pi, 1e-6, None)
+        pi = pi / pi.sum()
 
-        r1, p1 = estimate_nb_params(x, 1 - gamma)
-        r2, p2 = estimate_nb_params(x, gamma)
+        r_noise, p_noise = estimate_nb_params(x, gamma[0])
+        r_weak, p_weak = estimate_nb_params(x, gamma[1])
+        r_real, p_real = estimate_nb_params(x, gamma[2])
 
         ll = denom.sum()
         if np.abs(ll - prev_ll) < tol:
@@ -593,35 +651,46 @@ def fit_nb_mixture(anchor_counter, sensitivity, max_iter, tol=1e-6, output_csv='
         prev_ll = ll
 
     # enforce ordering
-    mean1 = r1 * (1 - p1) / p1
-    mean2 = r2 * (1 - p2) / p2
+    means = np.array([
+        r_noise * (1 - p_noise) / p_noise,
+        r_weak * (1 - p_weak) / p_weak,
+        r_real * (1 - p_real) / p_real,
+    ])
+    order = np.argsort(means)
+    gamma = gamma[order]
+    pi = pi[order]
+    params = [
+        (r_noise, p_noise),
+        (r_weak, p_weak),
+        (r_real, p_real),
+    ]
+    (r_noise, p_noise), (r_weak, p_weak), (r_real, p_real) = [params[idx] for idx in order]
 
-    if mean1 > mean2:
-        gamma = 1 - gamma
-        r1, r2 = r2, r1
-        p1, p2 = p2, p1
-        pi = 1 - pi
-
-    assignments = (gamma > sensitivity).astype(int)
+    real_index = int(np.where(order == 2)[0][0])
+    probs_real = gamma[real_index]
+    assignments = (probs_real > sensitivity).astype(int)
+    weak_assignments = int(np.sum(np.argmax(gamma, axis=0) == 1))
+    logger.info('Weak anchors identified by NB mixture: %d', weak_assignments)
 
     real_counts = np.sort(x[assignments == 1])
     threshold = real_counts[0] if len(real_counts) > 0 else None
 
     with open(output_csv, "w") as f:
-        f.write("barcode,count,prob_real\n")
+        f.write("barcode,count,prob_noise,prob_weak,prob_real\n")
         sorted_items = sorted(anchor_counter.items(), key=lambda kv: kv[1], reverse=True)
-        for (barcode, count), prob in zip(sorted_items, gamma):
-            f.write(f"{barcode},{count},{prob:.6f}\n")
+        for (barcode, count), noise_prob, weak_prob, real_prob in zip(sorted_items, gamma[0], gamma[1], gamma[2]):
+            f.write(f"{barcode},{count},{noise_prob:.6f},{weak_prob:.6f},{real_prob:.6f}\n")
     logger.info('Probabilies for anchors to be real are saved in "%s"', output_csv)
 
     return {
-        "probs_real": gamma,
+        "probs_real": probs_real,
         "assignments": assignments,
         "threshold": threshold,
         "params": {
-            "noise": {"r": r1, "p": p1},
-            "real": {"r": r2, "p": p2},
-            "mixing_fraction": pi,
+            "noise": {"r": r_noise, "p": p_noise},
+            "weak": {"r": r_weak, "p": p_weak},
+            "real": {"r": r_real, "p": p_real},
+            "mixing_fraction": float(pi[real_index]),
         },
     }
 
@@ -666,7 +735,7 @@ def plot_anchors(anchor_counter, probs_real, cutoff, sensitivity):
 
 
 def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int,
-                     search_range: int, min_qual: int, percentile_tail_filter: int,
+                     search_range: int, min_qual: int, percentile_tail_filter: int, expected_cells: int,
                      whitelist: set = None, processes: int = None, batch_size: int = 10000,
                      upstream_region_tsv: str = None, sensitivity=0.9, max_iter=200):
     """
@@ -681,6 +750,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
         search_range (int):              The range around the UMI length to look for exact matches
         min_qual (int):                  The minimum average quality in a barcode for it to be considered
         percentile_tail_filter (int):    The cutoff threshold for filtering the long tail before NB EM
+        expected_cells (int):            The number of cells that were expected to be sequenced
         whitelist (set):                 The whitelist of cell barcodes that are expected as a set for quick accession
         processes (int):                 Number of worker processes (defaults to cpu_count() - 1)
         batch_size (int):                Number of reads per worker task (default 1000)
@@ -833,8 +903,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
     logger.info('Percentile of frequency cutoff: %d', cut)
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
     logger.info('Putative anchors remaining after percentile filter: %d', len(putative_anchors_freq))
-    results = fit_nb_mixture(putative_anchors_freq, sensitivity, max_iter, output_csv='anchor_probs.csv')
-    print(results)
+    results = fit_nb_mixture(putative_anchors_freq, sensitivity, expected_cells, max_iter, output_csv='anchor_probs.csv')
     cutoff = results['threshold']
     logger.info('The cutoff frequency calculated from NB is: %d', cutoff)
     plot_anchors(putative_anchors_freq, results['probs_real'], cutoff, sensitivity)
