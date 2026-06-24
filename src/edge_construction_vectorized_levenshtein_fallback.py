@@ -5,6 +5,7 @@ import numpy as np
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
+import edlib
 
 logger = logging.getLogger(__name__)
 TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
@@ -16,14 +17,13 @@ _BYTE_POPCOUNT_TABLE = np.array([bin(i).count('1') for i in range(256)], dtype=n
 
 class VectorizedBatchProcessor:
     """Worker class that processes batches of putative barcodes against encoded anchors."""
-    def __init__(self, max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, anchor_myer_states, keep_best_match_only,
+    def __init__(self, max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, keep_best_match_only,
                  kmer_size, min_kmer_matches, max_myers_candidates):
         self.max_hamming_dist = max_hamming_dist
         self.max_levenshtein_dist = max_levenshtein_dist
         self.anchor_barcodes = anchor_barcodes
         self.anchor_encoded = anchor_encoded
         self.anchor_kmer_index = anchor_kmer_index
-        self.anchor_myer_states = anchor_myer_states
         self.keep_best_match_only = keep_best_match_only
         self.kmer_size = kmer_size
         self.min_kmer_matches = min_kmer_matches
@@ -64,42 +64,19 @@ class VectorizedBatchProcessor:
         filtered = sorted(filtered, key=lambda x: (-x[0], x[1]))
 
         return filtered[:self.max_myers_candidates]
-    
-    
-    def myers_levenshtein(self, text: str, max_dist: int, peq: dict[str, int], last_bit: int, bit_mask: int, pattern_len: int) -> int | None:
-        """Return Levenshtein distance if it is within cutoff, else None.
 
-        The implementation uses the Myers bit-parallel algorithm and prunes as soon as
-        the best possible final score can no longer reach the current cutoff.
-        """
-        text_len = len(text)
 
-        pv = bit_mask
-        mv = 0
-        score = pattern_len
+    def edlib_version(self, query, target):
+        max_mismatches = 2
 
-        for idx, base in enumerate(text):
-            eq = peq.get(base, 0)
-            xv = eq | mv
-            xh = (((eq & pv) + pv) ^ pv) | eq
-            ph = mv | ~(xh | pv)
-            mh = pv & xh
+        aln = edlib.align(target, query, mode='NW', task='distance', k=self.max_levenshtein_dist)
+        edit_dist = aln['editDistance']
 
-            if ph & last_bit:
-                score += 1
-            elif mh & last_bit:
-                score -= 1
+        # check if no alignment
+        if edit_dist == -1:
+            return self.max_levenshtein_dist + 1
 
-            remaining = text_len - idx - 1
-            if score - remaining > max_dist:
-                return None
-
-            ph = ((ph << 1) | 1) & bit_mask
-            mh = (mh << 1) & bit_mask
-            pv = (mh | ~(xv | ph)) & bit_mask
-            mv = (ph & xv) & bit_mask
-
-        return score if score <= max_dist else None
+        return edit_dist
 
     
     def process_myers(self, putative_barcode):
@@ -107,9 +84,9 @@ class VectorizedBatchProcessor:
 
         results = []
         for _, anchor_idx in candidates:
-            anchor_barcode, peq, last_bit, bit_mask, pattern_len = self.anchor_myer_states[anchor_idx]
-            dist = self.myers_levenshtein(putative_barcode, self.max_levenshtein_dist, peq, last_bit, bit_mask, pattern_len)
-            if dist:
+            anchor_barcode = self.anchor_barcodes[anchor_idx]
+            dist = self.edlib_version(putative_barcode, anchor_barcode)
+            if dist <= self.max_levenshtein_dist:
                 results.append((anchor_barcode, dist))
         
         return results
@@ -147,7 +124,7 @@ class VectorizedBatchProcessor:
         return local_out
 
 
-def _worker_init(max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, anchor_myer_states, keep_best_match_only,
+def _worker_init(max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor_encoded, anchor_kmer_index, keep_best_match_only,
                  kmer_size, min_kmer_matches, max_myers_candidates):
     """
     Initialize per-process VectorizedBatchProcessor.
@@ -158,7 +135,6 @@ def _worker_init(max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor
         anchor_barcodes (tuple[str, ...]): Anchor barcode strings.
         anchor_encoded (np.ndarray):       Anchor barcode encodings (uint32).
         anchor_kmer_index
-        anchor_myer_states
         keep_best_match_only (bool): Whether to keep only lowest-distance ties.
         kmer_size (int):              K-mer size used for Myers fallback candidate prefiltering.
         min_kmer_matches (int):       Minimum shared k-mers required to evaluate an anchor via Myers.
@@ -174,7 +150,6 @@ def _worker_init(max_hamming_dist, max_levenshtein_dist, anchor_barcodes, anchor
         anchor_barcodes,
         anchor_encoded,
         anchor_kmer_index,
-        anchor_myer_states,
         keep_best_match_only,
         kmer_size,
         min_kmer_matches,
@@ -215,23 +190,6 @@ def _safe_future_result(future):
     except Exception:
         logger.exception('Worker task raised an exception (see traceback) — re-raising')
         raise
-
-
-def build_peq(pattern: str) -> dict[str, int]:
-    """Build Myers position masks for a fixed pattern barcode."""
-    peq = defaultdict(int)
-    for idx, base in enumerate(pattern):
-        peq[base] |= 1 << idx
-    return peq
-
-
-def precompute_myers_pattern(pattern: str) -> tuple[dict[str, int], int, int, int]:
-    """Precompute Myers pattern state to reuse across many text queries."""
-    pattern_len = len(pattern)
-    peq = build_peq(pattern)
-    last_bit = 1 << (pattern_len - 1) if pattern_len > 0 else 0
-    bit_mask = (1 << pattern_len) - 1 if pattern_len > 0 else 0
-    return peq, last_bit, bit_mask, pattern_len
 
 
 def hamming(e1: int, e2: int) -> int:
@@ -411,7 +369,6 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     anchor_encoded = np.array([encode_barcode(barcode) for barcode in anchor_barcodes], dtype=np.uint32)
     # create the anchor kmer index kmer -> anchor
     anchor_kmer_index = build_anchor_kmer_index(anchor_barcodes, kmer_size)
-    anchor_myer_states = [(barcode, *precompute_myers_pattern(barcode)) for barcode in anchor_barcodes]
 
     logger.info('Searching putative barcodes against encoded anchors')
     combined_result = {'total_edges': 0,
@@ -438,7 +395,6 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                                           anchor_barcodes,
                                           anchor_encoded,
                                           anchor_kmer_index,
-                                          anchor_myer_states,
                                           keep_best_match_only,
                                           kmer_size,
                                           min_kmer_matches,
