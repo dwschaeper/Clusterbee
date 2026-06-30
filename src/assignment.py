@@ -177,7 +177,7 @@ def _submit_batch(executor, chunk, worker_id):
     return executor.submit(_worker_process_batch, (chunk, worker_id))
 
 
-def assignment(graph_data, reads_lookup, anchor_set, processes=None, batch_size=50000, max_pending=7):
+def assignment(graph_data, reads_lookup, anchor_set, processes=None, batch_size=200000, max_pending=7):
     # initialize variables
     barcode_to_community = defaultdict(str)
     community_to_anchor = defaultdict(list)
@@ -191,11 +191,13 @@ def assignment(graph_data, reads_lookup, anchor_set, processes=None, batch_size=
     used_ids = set()
     shard_files = []
     if processes == None:
-        processes = os.cpu_count() - 1
+        processes = os.cpu_count() - 1 // 2
+    else:
+        processes = processes // 2
     pending = set()
     worker_id = 0
     logger.info('Starting assignment')
-    with ProcessPoolExecutor(max_workers=processes, initializer=_worker_init, initargs=(barcode_to_community, community_to_anchor, reads_lookup, anchor_set, 1)) as executor, open('.putative_barcodes', 'r') as file:
+    with ProcessPoolExecutor(max_workers=processes, initializer=_worker_init, initargs=(barcode_to_community, community_to_anchor, reads_lookup, anchor_set, 2)) as executor, open('.putative_barcodes', 'r') as file:
         batch = []
         prior_read = None
 

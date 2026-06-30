@@ -18,7 +18,7 @@ def parse_args():
                         help='The input fastq file.')
     parser.add_argument('--processes', default=None, type=int,
                         help='Number of worker processes to use for barcode extraction (default: cpu_count()-1).')
-    parser.add_argument('--batch_size', default=10000, type=int,
+    parser.add_argument('--batch_size', default=5000, type=int,
                         help='Number of reads per worker batch (default: 1000).')
 
     # barcode extraction parameters
@@ -118,4 +118,4 @@ if __name__ == '__main__':
     
     graph_data = make_graph(putative_anchors, putative_barcodes, arguments.resolution, arguments.iterations)
 
-    assignment(graph_data, reads_lookup_db, set(putative_anchors.keys()), arguments.processes, arguments.batch_size)
+    assignment(graph_data, reads_lookup_db, set(putative_anchors.keys()), arguments.processes, arguments.batch_size * 50)
