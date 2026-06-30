@@ -2,6 +2,7 @@ from collections import defaultdict
 from itertools import groupby
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import lmdb
+from isal import igzip 
 import subprocess
 import os
 import logging
@@ -23,41 +24,6 @@ def _lookup_read_sequence(read_id):
 
     return _worker_reads_lookup.get(read_id)
 
-
-def _write_fasta_shard(read_assignment, worker_id):
-    outfile = f"assigned_reads.part_{worker_id}.fasta.gz"
-
-    proc = subprocess.Popen(
-        ["pigz", "-p", str(_worker_pigz_threads), "-c"],
-        stdin=subprocess.PIPE,
-        stdout=open(outfile, "wb"),
-        text=True
-    )
-
-    buf = []
-    append = buf.append
-    flush_threshold = 100000
-
-    for read_id, (barcode, community, community_anchor_string) in read_assignment.items():
-        seq = _lookup_read_sequence(read_id)
-        if seq is None:
-            continue
-
-        append(f">{read_id}|barcode={barcode}|community={community}|community_anchor={community_anchor_string}\n{seq}")
-
-        if len(buf) >= flush_threshold:
-            proc.stdin.write("\n".join(buf) + "\n")
-            buf.clear()
-
-    if buf:
-        proc.stdin.write("\n".join(buf) + "\n")
-
-    proc.stdin.close()
-    proc.wait()
-
-    return outfile
-
-
 def _worker_process_batch(args):
     chunk, worker_id = args
 
@@ -69,78 +35,46 @@ def _worker_process_batch(args):
 
     shard = f"assigned_reads.part_{worker_id}.fasta.gz"
 
-    proc = subprocess.Popen(
-        ["pigz", "-p", str(_worker_pigz_threads), "-c"],
-        stdin=subprocess.PIPE,
-        stdout=open(shard, "wb"),
-        text=True
-    )
-
     buf = []
     append = buf.append
     flush_threshold = 100000
 
-    for row in chunk:
-        read_id, barcode_string, *_ = row.rstrip("\n").split("\t")
+    with igzip.open(shard, "wt") as out:
+        for row in chunk:
+            read_id, barcode_string, *_ = row.rstrip("\n").split("\t")
 
-        barcode = None
-        community = None
+            barcode = None
+            community = None
 
-        for bc in barcode_string.split(","):
-            community = barcode_to_community.get(bc)
-            if community is not None:
-                barcode = bc
-                break
+            for bc in barcode_string.split(","):
+                community = barcode_to_community.get(bc)
+                if community is not None:
+                    barcode = bc
+                    break
 
-        if barcode is None:
-            continue
+            if barcode is None:
+                continue
 
-        local_cell_membership[community].add(read_id)
-        local_cell_sizes[community] += 1
+            local_cell_membership[community].add(read_id)
+            local_cell_sizes[community] += 1
 
-        seq = _lookup_read_sequence(read_id)
-        if seq is None:
-            continue
+            seq = _lookup_read_sequence(read_id)
+            if seq is None:
+                continue
 
-        append(
-            f">{read_id}|barcode={barcode}|community={community}"
-            f"|community_anchor={community_to_anchor[community]}\n{seq}"
-        )
+            append(
+                f">{read_id}|barcode={barcode}|community={community}"
+                f"|community_anchor={community_to_anchor[community]}\n{seq}"
+            )
 
-        if len(buf) >= flush_threshold:
-            proc.stdin.write("\n".join(buf) + "\n")
-            buf.clear()
+            if len(buf) >= flush_threshold:
+                out.write("\n".join(buf) + "\n")
+                buf.clear()
 
-    if buf:
-        proc.stdin.write("\n".join(buf) + "\n")
-
-    proc.stdin.close()
-    proc.wait()
+        if buf:
+            out.write("\n".join(buf) + "\n")
 
     return local_cell_membership, local_cell_sizes, shard
-
-        #anchor_matches = anchor_set.intersect(barcodes)
-
-        # only one anchor match
-        #if len(anchor_matches) == 1:
-        #    idx = barcodes.index(next(iter(anchor_matches)))
-        #    bc = barcodes[idx]
-        #    community = barcode_to_community[bc]
-
-        # best position match
-        #else:
-        #for barcode in barcodes:
-        #    if barcode_to_community.get(bc, None) != None:
-        #        community = barcode_to_community[barcode]
-        #        local_cell_membership[community].add(read_id)
-        #        local_cell_sizes[community] += 1
-        #        read_assignment[read_id] = (barcode, community, community_to_anchor[community])
-        #        break
-           
-
-    #shard = _write_fasta_shard(read_assignment, worker_id)
-    #return local_cell_membership, local_cell_sizes, shard
-
 
 
 def _worker_init(barcode_to_community, community_to_anchor, reads_lookup, anchor_set, pigz_threads):
