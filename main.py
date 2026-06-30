@@ -5,7 +5,7 @@ from src.logging_config import setup_logging
 from src.extract_barcodes import extract_barcodes
 from src.edge_construction_vectorized_levenshtein_fallback import construct_graph_edges
 from src.make_graph import make_graph
-from src.reads_to_cells import assignment
+from src.assignment import assignment
 
 
 setup_logging(level=logging.INFO, logfile="GBBD.log")
@@ -29,15 +29,13 @@ def parse_args():
     parser.add_argument('--no_umi', action='store_true',
                         help='Use this if there are no UMIs used.')
     parser.add_argument('--umi_len', default=12, type=int,
-                        help='The length of the UMI sequencie used.')
+                        help='The length of the UMI sequence used.')
     parser.add_argument('--cell_barcode_whitelist', default=None, type=str, required=True,
                         help='The whitelist of cell barcodes where each line in the whitelist is a barcode.')
-    parser.add_argument('--search_range', default=4, type=int,
+    parser.add_argument('--search_range', default=10, type=int,
                         help='The range around the UMI length to look for exact barcode matches if whitelist is provided.')
-    parser.add_argument('--min_qual', default=15, type=int,
+    parser.add_argument('--min_qual', default=10, type=int,
                         help='The minimum average quality across a barcode for it to be considered.')
-    parser.add_argument('--exact_anchor', default=False,
-                        help='Whether or not to enforce anchors must be one per read and at the exact position as expected')
     parser.add_argument('--upstream_region_tsv', default=None, type=str,
                         help='Optional output TSV path with sequence from the first barcode-search base through the polyT match.')
     parser.add_argument('--percentile_tail_filter', default=1, type=int,
@@ -46,10 +44,18 @@ def parse_args():
                         help='The probabilty required from the NB mixture to be considered a true anchor.')
     parser.add_argument('--max_iter', default=200, type=int,
                         help='The maximum number of iterations for the EM step.')
+    parser.add_argument('--adapter', default='CTACACGACGCTCTTCCGATCT', type=str,
+                        help='The adapter used during sequencing that will be looked for to anchor the barcode search.')
+    parser.add_argument('--adapter_tail_length', default=10, type=int,
+                        help='How many bases of the adapter to look for.')
+    parser.add_argument('--expected_cells', default=None, type=int,
+                        help='The number cells that were expected to be sequenced.')
     
     # edge construction parameters
-    parser.add_argument('--max_dist', default=2, type=int,
+    parser.add_argument('--max_hamming_dist', default=2, type=int,
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
+    parser.add_argument('--max_levenshtein_dist', default=3, type=int,
+                        help='The max levenshtein distance between a putative barcode and an anchor for it io be considered.')
     parser.add_argument('--keep_best_match_only', action='store_true',
                         help='If set, keep only matches at the minimum hamming distance (including ties). By default, keep all matches within max_dist.')
     parser.add_argument('--kmer_size', default=4, type=int,
@@ -79,14 +85,15 @@ if __name__ == '__main__':
         lines = file.readlines()
     lines = [line.strip() for line in lines]
     whitelist = set(lines)
-    putative_anchors, putative_barcodes = extract_barcodes(fastq=arguments.input,
+    putative_anchors, putative_barcodes, reads_lookup_db = extract_barcodes(fastq=arguments.input,
                      polyt_min_length=arguments.polyT_min_length,
+                     adapter=arguments.adapter[-arguments.adapter_tail_length:],
                      barcode_len=arguments.barcode_len,
                      umi_len=arguments.umi_len,
                      search_range=arguments.search_range,
                      min_qual=arguments.min_qual,
-                     exact_anchor = arguments.exact_anchor,
                      percentile_tail_filter = arguments.percentile_tail_filter,
+                     expected_cells = arguments.expected_cells,
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size,
@@ -98,7 +105,8 @@ if __name__ == '__main__':
     construct_graph_edges(
         putative_anchors,
         putative_barcodes,
-        arguments.max_dist,
+        arguments.max_hamming_dist,
+        arguments.max_levenshtein_dist,
         arguments.barcode_len,
         processes=arguments.processes,
         batch_size=arguments.batch_size,
@@ -110,4 +118,4 @@ if __name__ == '__main__':
     
     graph_data = make_graph(putative_anchors, putative_barcodes, arguments.resolution, arguments.iterations)
 
-    assignment(graph_data, putative_barcodes)
+    assignment(graph_data, reads_lookup_db, set(putative_anchors.keys()), arguments.processes, arguments.batch_size)
