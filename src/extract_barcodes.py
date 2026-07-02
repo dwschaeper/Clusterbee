@@ -14,7 +14,7 @@ import edlib
 
 logger = logging.getLogger(__name__)
 
-# per-process worker state and helpers
+# per-process worker state and helpers (used by ProcessPoolExecutor initializer)
 _worker_processor = None
 
 
@@ -38,14 +38,14 @@ class BarcodeBatchProcessor:
             whitelist (set):              The whitelist of cell barcodes
             write_upstream_region (bool): Whether to emit trimmed upstream sequence lines for output
         """
-        self.polyt_min_length = polyt_min_length
-        self.adapter = adapter
         self.barcode_len = barcode_len
+        self.adapter = adapter
         self.umi_len = umi_len
         self.search_range = search_range
         self.min_qual = min_qual
         self.whitelist = whitelist
         self.write_upstream_region = write_upstream_region
+        self.polyt_min_length = polyt_min_length
         self.buffer_dist = self.barcode_len + self.umi_len
 
     def process(self, records_batch):
@@ -58,61 +58,19 @@ class BarcodeBatchProcessor:
         Returns:
             dict: Keys of local_putative_lines, local_upstream_region_lines, local_putative_freq, local_read_putatives, local_anchor_freq,
                   local_polya, local_no_polya, local_anchor, local_quality_filtered_reads, local_quality_filtered_barcodes, local_only_putative_reads,
-                  local_processed, reads, local_both, local_forward_only, local_reverse_only, local_anchor_decided, local_adapter, local_with_anchors
+                  local_processed, reads, local_both, local_anchor_decided, local_adapter, local_with_anchors
         """
-        # initialize variables
         local_putative_lines = []
         local_upstream_region_lines = []
-        #reads = defaultdict(str)
-        local_with_anchors = set()
-        #local_read_putatives = {}
         local_putative_freq = defaultdict(int)
         local_anchor_freq = Counter()
         local_polya = 0
-        local_no_polya = 0
         local_processed = 0
         local_anchor = 0
-        local_quality_filtered_reads = 0
         local_quality_filtered_barcodes = 0
         local_only_putative_reads = 0
         local_both = 0
-        local_forward_only = 0
-        local_reverse_only = 0
-        local_anchor_decided = 0
         local_adapter = 0
-
-        def store_result(read_id, read_seq, putative_barcodes, putative_umis, putative_position, anchors, quality_filtered):
-            nonlocal local_anchor
-            nonlocal local_quality_filtered_reads
-            nonlocal local_quality_filtered_barcodes
-            nonlocal local_only_putative_reads
-
-            if putative_barcodes:
-                #reads[read_id] = read_seq
-                local_putative_lines.append(
-                    f'{read_id}\t{",".join(putative_barcodes)}\t'
-                    f'{",".join(putative_umis)}\t'
-                    f'{read_seq}\n'
-                )
-
-            if anchors:
-                local_with_anchors.add(read_id.encode('utf-8'))
-                #local_read_putatives[record[0]] = tuple(putative_barcodes)
-
-            for barcode in putative_barcodes:
-                local_putative_freq[barcode] += 1
-
-            for anchor in anchors:
-                local_anchor_freq[anchor] += 1
-                local_anchor += 1
-
-            if quality_filtered > 0:
-                local_quality_filtered_reads += 1
-                local_quality_filtered_barcodes += quality_filtered
-
-            if not anchors and putative_barcodes:
-                    local_only_putative_reads += 1
-
 
         for record in records_batch:
             matching_data = self._find_upstream(record[1], record[2])
@@ -120,16 +78,14 @@ class BarcodeBatchProcessor:
             # counting
             if matching_data['f_polyt_score'] > 0 or matching_data['r_polyt_score'] > 0:
                 local_polya += 1
-            else:
-                local_no_polya += 1
             if matching_data['f_adapter_end'] or matching_data['r_adapter_end']:
                 local_adapter += 1
 
             # check if both strands have a valid upstream, select the strand with anchors
             if matching_data['f_upstream_tail'] and matching_data['r_upstream_tail']:
-                f_putative_barcodes, f_putative_umis, f_putative_position, f_anchors, f_quality_filtered = self._extract_putatives(
+                f_putative_barcodes, f_putative_umis, f_anchors, f_quality_filtered = self._extract_putatives(
                     matching_data['f_upstream_tail'], matching_data['f_upstream_qual'])
-                r_putative_barcodes, r_putative_umis, r_putative_position, r_anchors, r_quality_filtered = self._extract_putatives(
+                r_putative_barcodes, r_putative_umis, r_anchors, r_quality_filtered = self._extract_putatives(
                     matching_data['r_upstream_tail'], matching_data['r_upstream_qual'])
 
                 forward_len_diff = abs(len(matching_data['f_upstream_tail']) - (self.barcode_len + self.umi_len))
@@ -137,57 +93,93 @@ class BarcodeBatchProcessor:
 
                 # if only one orientation has an anchor, choose that
                 if f_anchors and not r_anchors:
-                    store_result(record[0], matching_data['f_read'], f_putative_barcodes, f_putative_umis, f_putative_position, f_anchors, f_quality_filtered)
+                    if f_putative_barcodes:
+                        local_putative_lines.append(f'{record[0]}\t{",".join(f_putative_barcodes)}\t{",".join(f_putative_umis)}\t{matching_data["f_read"]}\n')
+                    for barcode in f_putative_barcodes:
+                        local_putative_freq[barcode] += 1
+                    for anchor in f_anchors:
+                        local_anchor_freq[anchor] += 1
+                        local_anchor += 1
+                    local_quality_filtered_barcodes += f_quality_filtered
+
                 elif not f_anchors and r_anchors:
-                    store_result(record[0], matching_data['r_read'], r_putative_barcodes, r_putative_umis, r_putative_position, r_anchors, r_quality_filtered)
-                
+                    if r_putative_barcodes:
+                        local_putative_lines.append(f'{record[0]}\t{",".join(r_putative_barcodes)}\t{",".join(r_putative_umis)}\t{matching_data["r_read"]}\n')
+                    for barcode in r_putative_barcodes:
+                        local_putative_freq[barcode] += 1
+                    for anchor in r_anchors:
+                        local_anchor_freq[anchor] += 1
+                        local_anchor += 1
+                    local_quality_filtered_barcodes += r_quality_filtered
+
                 # choose the one with the proper length
                 elif forward_len_diff < reverse_len_diff:
-                    store_result(record[0], matching_data['f_read'], f_putative_barcodes, f_putative_umis, f_putative_position, f_anchors, f_quality_filtered)
+                    if f_putative_barcodes:
+                        local_putative_lines.append(f'{record[0]}\t{",".join(f_putative_barcodes)}\t{",".join(f_putative_umis)}\t{matching_data["f_read"]}\n')
+                    for barcode in f_putative_barcodes:
+                        local_putative_freq[barcode] += 1
+                    for anchor in f_anchors:
+                        local_anchor_freq[anchor] += 1
+                        local_anchor += 1
+                    local_quality_filtered_barcodes += f_quality_filtered
                 elif reverse_len_diff < forward_len_diff:
-                    store_result(record[0], matching_data['r_read'], r_putative_barcodes, r_putative_umis, r_putative_position, r_anchors, r_quality_filtered)
-                
+                    if r_putative_barcodes:
+                        local_putative_lines.append(f'{record[0]}\t{",".join(r_putative_barcodes)}\t{",".join(r_putative_umis)}\t{matching_data["r_read"]}\n')
+                    for barcode in r_putative_barcodes:
+                        local_putative_freq[barcode] += 1
+                    for anchor in r_anchors:
+                        local_anchor_freq[anchor] += 1
+                        local_anchor += 1
+                    local_quality_filtered_barcodes += r_quality_filtered
                 # else log that both strand could be valid
                 else:
                     local_both += 1
 
             # check that only forward stand had a match
             elif matching_data['f_upstream_tail']:
-                local_forward_only += 1
-                putative_barcodes, putative_umis, putative_position, anchors, quality_filtered = self._extract_putatives(
+                putative_barcodes, putative_umis, anchors, quality_filtered = self._extract_putatives(
                     matching_data['f_upstream_tail'], matching_data['f_upstream_qual'])
-                store_result(record[0], matching_data['f_read'], putative_barcodes, putative_umis, putative_position, anchors, quality_filtered)
+
+                if putative_barcodes:
+                    local_putative_lines.append(f'{record[0]}\t{",".join(putative_barcodes)}\t{",".join(putative_umis)}\t{matching_data["f_read"]}\n')
+                for barcode in putative_barcodes:
+                    local_putative_freq[barcode] += 1
+                for anchor in anchors:
+                    local_anchor_freq[anchor] += 1
+                    local_anchor += 1
+                if not anchors and putative_barcodes:
+                    local_only_putative_reads += 1
+                local_quality_filtered_barcodes += quality_filtered
 
             # check that only reverse strand had a match
             elif matching_data['r_upstream_tail']:
-                local_reverse_only += 1
-                putative_barcodes, putative_umis, putative_position, anchors, quality_filtered = self._extract_putatives(
+                putative_barcodes, putative_umis, anchors, quality_filtered = self._extract_putatives(
                     matching_data['r_upstream_tail'], matching_data['r_upstream_qual'])
 
-                store_result(record[0], matching_data['r_read'], putative_barcodes, putative_umis, putative_position, anchors, quality_filtered)
-
+                if putative_barcodes:
+                    local_putative_lines.append(f'{record[0]}\t{",".join(putative_barcodes)}\t{",".join(putative_umis)}\t{matching_data["r_read"]}\n')
+                for barcode in putative_barcodes:
+                    local_putative_freq[barcode] += 1
+                for anchor in anchors:
+                    local_anchor_freq[anchor] += 1
+                    local_anchor += 1 
+                if not anchors and putative_barcodes:
+                    local_only_putative_reads += 1
+                local_quality_filtered_barcodes += quality_filtered
             local_processed += 1
 
         return {
             'local_putative_lines': local_putative_lines,
             'local_upstream_region_lines': local_upstream_region_lines,
             'local_putative_freq': local_putative_freq,
-            #'local_read_putatives': local_read_putatives,
             'local_anchor_freq': local_anchor_freq,
             'local_polya': local_polya,
-            'local_no_polya': local_no_polya,
             'local_anchor': local_anchor,
-            'local_quality_filtered_reads': local_quality_filtered_reads,
             'local_quality_filtered_barcodes': local_quality_filtered_barcodes,
             'local_only_putative_reads': local_only_putative_reads,
             'local_processed': local_processed,
-            #'reads': reads,
             'local_both': local_both,
-            'local_forward_only': local_forward_only,
-            'local_reverse_only': local_reverse_only,
-            'local_anchor_decided': local_anchor_decided,
-            'local_adapter': local_adapter,
-            'local_with_anchors': local_with_anchors
+            'local_adapter': local_adapter
         }
 
     @staticmethod
@@ -214,11 +206,10 @@ class BarcodeBatchProcessor:
             upstream_qual (str): Quality string for upstream_tail.
 
         Returns:
-            tuple: (putative_barcodes (list), putative_umis (list), barcode position (int), anchors (list), quality_filtered (int))
+            tuple: (putative_barcodes (list), putative_umis (list), is_anchors (list of bool))
         """
         putative_barcodes = []
         putative_umis = []
-        putative_position = []
         anchors = []
         quality_filtered = 0
 
@@ -235,13 +226,12 @@ class BarcodeBatchProcessor:
             if checker in self.whitelist and self._avg_qual(checker_qual) >= self.min_qual:
                 anchors.append(checker)
             putative_barcodes.append(checker)
-            putative_position.append(i - expected_pos)
             # add T's to the UMI when too short from running the window upstream and including the identified polyT in the UMI
             while len(umi) != self.umi_len:
                 umi = umi + 'T'
             putative_umis.append(umi)
 
-        return putative_barcodes, putative_umis, putative_position, anchors, quality_filtered
+        return putative_barcodes, putative_umis, anchors, quality_filtered
 
     def _adapter_search(self, seq: str):
         """
@@ -446,9 +436,12 @@ def _worker_process_batch(records_batch):
         records_batch (list): A list of tuples (title, sequence, qual) for each read in the batch.
 
     Returns:
-        dict: Keys of local_putative_lines, local_upstream_region_lines, local_putative_freq, local_read_putatives, local_anchor_freq,
-                  local_polya, local_no_polya, local_anchor, local_quality_filtered_reads, local_quality_filtered_barcodes, local_only_putative_reads,
-                  local_processed, reads, local_both, local_forward_only, local_reverse_only, local_anchor_decided, local_adapter, local_with_anchors
+        list: Lines for putative barcodes to write to file
+        list: Lines for anchor barcodes to write to file
+        Counter: Frequency of each putative barcode in the batch
+        Counter: Frequency of each anchor barcode in the batch
+        int: Number of reads with polyA found in the batch
+        int: Total number of reads processed in the batch
     """
     if _worker_processor is None:
         raise RuntimeError(
@@ -499,7 +492,7 @@ def estimate_nb_params(vals, weights):
     return r, p
 
 
-def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_strength=500, max_iter=200, tol=1e-6, output_csv='anchor_probabilities.csv'):
+def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_strength=200, max_iter=200, tol=1e-6, output_csv='anchor_probabilities.csv'):
     """
     Deterministic 3-component NB mixture with sensitivity-controlled threshold + CSV output.
 
@@ -516,7 +509,6 @@ def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_stren
     """
     x = np.array(sorted(anchor_counter.values(), reverse=True), dtype=float)
     n = len(x)
-    print(n)
 
     # initialization: top-ranked counts seed the real component, middle ranks the weak component,
     # and the tail seeds the noise component.
@@ -529,18 +521,18 @@ def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_stren
 
     if expected_cells is not None:
         # original approach: use fractions of prior_strength
-        #expected_fraction = min(max(expected_cells / n, 1e-6), 1 - 1e-6)
-        #non_real_fraction = (1 - expected_fraction) / 2
-        #alpha = np.array([non_real_fraction, non_real_fraction, expected_fraction], dtype=float) * prior_strength
-        #pi = alpha / alpha.sum()
+        expected_fraction = min(max(expected_cells / n, 1e-6), 1 - 1e-6)
+        non_real_fraction = (1 - expected_fraction) / 2
+        alpha = np.array([non_real_fraction, non_real_fraction, expected_fraction], dtype=float) * prior_strength
+        pi = alpha / alpha.sum()
         
         # new approach
-        alpha = np.array([
-            (n - expected_cells) // 2,           # noise prior
-            (n - expected_cells) // 4,           # weak prior
-            expected_cells                # real prior
-        ], dtype=float)
-        pi = alpha / alpha.sum()
+        #alpha = np.array([
+        #    expected_cells / 2,           # noise prior
+        #    expected_cells + 1,           # weak prior
+        #    expected_cells                # real prior
+        #], dtype=float)
+        #pi = alpha / alpha.sum()
     else:
         alpha = np.ones(3, dtype=float)
         pi = np.array([z_noise.mean(), z_weak.mean(), z_real.mean()], dtype=float)
@@ -598,6 +590,8 @@ def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_stren
     real_index = int(np.where(order == 2)[0][0])
     probs_real = gamma[real_index]
     assignments = (probs_real > sensitivity).astype(int)
+    weak_assignments = int(np.sum(np.argmax(gamma, axis=0) == 1))
+    logger.info('Weak anchors identified by NB mixture: %d', weak_assignments)
 
     real_counts = np.sort(x[assignments == 1])
     threshold = real_counts[0] if len(real_counts) > 0 else None
@@ -626,7 +620,9 @@ def fit_nb_mixture(anchor_counter, sensitivity, expected_cells=None, prior_stren
 
 def plot_anchors(anchor_counter, probs_real, probs_damage, probs_noise, cutoff, sensitivity):
     """
-    Plot the ranked anchor counts and probabilities
+    Plot:
+    1) ranked anchor counts
+    2) count vs probability (second panel)
 
     Args:
         anchor_counter (Counter): barcode -> count
@@ -660,6 +656,8 @@ def plot_anchors(anchor_counter, probs_real, probs_damage, probs_noise, cutoff, 
     plt.tight_layout()
     plt.savefig('anchor_frequency_thresholds_and_probability.png')
     plt.close()
+
+    logger.info('Ranked anchor plot has been saved in anchor_frequency_thresholds_and_probability.png')
 
 
 def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int,
@@ -697,20 +695,14 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
     putative_anchors_freq = defaultdict(int)
     putative_barcodes_freq = defaultdict(int)
     polya_found_reads = 0
-    no_polya_found_reads = 0
     reads_with_putative_anchor_count = 0
     processed = 0
-    reads_with_quality_filtered = 0
     total_quality_filtered_barcodes = 0
     only_putative_barcodes = 0
     both_strands_valid = 0
     forward_only = 0
     reverse_only = 0
-    anchor_decided = 0
     adapter_found = 0
-    reads_with_anchors = set()
-    reads_lookup_db_path = '.reads_lookup.lmdb'
-    putative_reads_db_path = '.putative_reads.lmdb'
     max_workers = processes if processes and processes > 0 else max(1, (os.cpu_count() or 2) - 1)
 
     logger.info('Using %d worker processes (batch_size=%d)', max_workers, batch_size)
@@ -725,9 +717,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
 
     optional_upstream_cm = open(upstream_region_tsv, 'w') if upstream_region_tsv is not None else nullcontext(None)
 
-    with (open('.putative_barcodes', 'w') as putative_set_file, optional_upstream_cm as upstream_region_file, executor_cm as executor,
-            ReadLookupWriter(reads_lookup_db_path) as reads_lookup_writer,
-            ReadPutativeWriter(putative_reads_db_path) as putative_reads_writer):
+    with (open('.putative_barcodes', 'w') as putative_set_file, optional_upstream_cm as upstream_region_file, executor_cm as executor):
         if upstream_region_file is not None:
             upstream_region_file.write('read_id\tsearch_start_to_polyt\n')
 
@@ -753,26 +743,17 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
                     if upstream_region_file is not None:
                         for line in result_dict['local_upstream_region_lines']:
                             upstream_region_file.write(line)
-                    #reads_lookup_writer.write_many(result_dict['reads'].items())
-                    #putative_reads_writer.write_many(result_dict['local_read_putatives'].items())
-                    #putative_barcodes.update(result_dict['local_putatives'])
                     for k, v in result_dict['local_putative_freq'].items():
                         putative_barcodes_freq[k] += v
                     for k, v in result_dict['local_anchor_freq'].items():
                         putative_anchors_freq[k] += v
                     polya_found_reads += result_dict['local_polya']
-                    no_polya_found_reads += result_dict['local_no_polya']
                     reads_with_putative_anchor_count += result_dict['local_anchor']
                     processed += result_dict['local_processed']
-                    reads_with_quality_filtered += result_dict['local_quality_filtered_reads']
                     total_quality_filtered_barcodes += result_dict['local_quality_filtered_barcodes']
                     only_putative_barcodes += result_dict['local_only_putative_reads']
                     both_strands_valid += result_dict['local_both']
-                    forward_only += result_dict['local_forward_only']
-                    reverse_only += result_dict['local_reverse_only']
-                    anchor_decided += result_dict['local_anchor_decided']
                     adapter_found += result_dict['local_adapter']
-                    reads_with_anchors.update(result_dict['local_with_anchors'])
                     if processed % 500000 == 0:
                         logger.info('Extracted barcodes from %d reads', processed)
 
@@ -791,26 +772,17 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
                 if upstream_region_file is not None:
                     for line in result_dict['local_upstream_region_lines']:
                         upstream_region_file.write(line)
-                #reads_lookup_writer.write_many(result_dict['reads'].items())
-                #putative_reads_writer.write_many(result_dict['local_read_putatives'].items())
-                #putative_barcodes.update(result_dict['local_putatives'])
                 for k, v in result_dict['local_putative_freq'].items():
                     putative_barcodes_freq[k] += v
                 for k, v in result_dict['local_anchor_freq'].items():
                     putative_anchors_freq[k] += v
                 polya_found_reads += result_dict['local_polya']
-                no_polya_found_reads += result_dict['local_no_polya']
                 reads_with_putative_anchor_count += result_dict['local_anchor']
                 processed += result_dict['local_processed']
-                reads_with_quality_filtered += result_dict['local_quality_filtered_reads']
                 total_quality_filtered_barcodes += result_dict['local_quality_filtered_barcodes']
                 only_putative_barcodes += result_dict['local_only_putative_reads']
                 both_strands_valid += result_dict['local_both']
-                forward_only += result_dict['local_forward_only']
-                reverse_only += result_dict['local_reverse_only']
-                anchor_decided += result_dict['local_anchor_decided']
                 adapter_found += result_dict['local_adapter']
-                reads_with_anchors.update(result_dict['local_with_anchors'])
                 if processed % 500000 == 0:
                     logger.info('Extracted barcodes from %d reads', processed)
 
@@ -820,63 +792,13 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
 
     
     anchor_freq_sizes = set(putative_anchors_freq.values())
-    prior_count = len(anchor_freq_sizes)
-    print(prior_count)
-    cut = np.floor(np.percentile(list(anchor_freq_sizes), percentile_tail_filter))
-    print(cut)
-    putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
-    cut_by_percentile = prior_count - len(putative_anchors_freq)
-    print(cut_by_percentile)
+    prior_count = len(putative_anchors_freq)
+    #cut = np.floor(np.percentile(list(anchor_freq_sizes), percentile_tail_filter))
+    #putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value > cut}
     results = fit_nb_mixture(putative_anchors_freq, sensitivity, expected_cells, max_iter, output_csv='anchor_probs.csv')
     cutoff = results['threshold']
     plot_anchors(putative_anchors_freq, results['probs_real'], results['probs_damage'], results['probs_noise'], cutoff, sensitivity)
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value >= cutoff}
-
-    # clean putative barcodes so that a read with a surviving anchor reduces downstream work
-    #search_reads = 0
-    #removed_putative_barcodes = 0
-    #removed_unique_putative_barcodes = 0
-    #filtered_anchors = set(putative_anchors_freq.keys())
-    #filtered_anchors_bytes = {entry.encode('utf-8') for entry in filtered_anchors}
-    #removing_putatives = Counter()
-    #putative_reads_env = lmdb.open(
-    #    putative_reads_db_path,
-    #    readonly=True,
-    #    lock=False,
-    #    readahead=True,
-    #    max_readers=512
-    #)
-
-    #try:
-    #    with putative_reads_env.begin() as txn:
-    #        cursor = txn.cursor()
-    #        for key, value in cursor:
-    #            if key not in reads_with_anchors:
-    #                continue
-
-    #            read_putatives = set(value.split(b'\x00'))
-    #            if read_putatives.intersection(filtered_anchors_bytes):
-    #                search_reads += 1
-    #                for barcode in read_putatives:
-    #                    removing_putatives[barcode] += 1
-    #finally:
-    #    putative_reads_env.close()
-
-    #for barcode, count in removing_putatives.items():
-    #    barcode = barcode.decode('utf-8')
-    #    current = putative_barcodes_freq.get(barcode)
-    #    new_val = current - count
-    #    if new_val <= 0:
-    #        del putative_barcodes_freq[barcode]
-    #        removed_unique_putative_barcodes += 1
-    #    else:
-    #        putative_barcodes_freq[barcode] = new_val
-    #    removed_putative_barcodes += count
-
-    #logger.info('Reads with surviving anchors used to trim putatives: %d', search_reads)
-    #logger.info('Unique putative barcodes removed by surviving anchors: %d', removed_unique_putative_barcodes)
-    #logger.info('Putative barcode frequency decrements applied: %d', removed_putative_barcodes)
-    #logger.info('Unique putative barcodes remaining after trimming: %d', len(putative_barcodes_freq))
 
     # log information
     logger.info('Total reads processed: %d', processed)
@@ -886,9 +808,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
     logger.info('Passed reads with anchors: %d', reads_with_putative_anchor_count)
     logger.info('Passed reads without anchors: %d', only_putative_barcodes)
     logger.info('Maximum recoverable reads: %d', reads_with_putative_anchor_count + only_putative_barcodes)
-    #logger.info('Number of reads that will be searched for a non-perfect anchor match: %d', search_reads)
     logger.info('Number of putative anchor barcodes before filter: %d', prior_count)
-    logger.info('Number of putative anchors removed by percentile filter: %d', cut_by_percentile)
     logger.info('Minimum anchor size calculated from NB is: %d', cutoff)
     logger.info('The number of anchors after filtering is: %d', len(putative_anchors_freq))
     logger.info('Number of unique putative barcodes: %d', len(putative_barcodes_freq))
@@ -896,5 +816,4 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
     putative_anchors_freq = dict(sorted(putative_anchors_freq.items()))
     putative_barcodes_freq = dict(sorted(putative_barcodes_freq.items()))
 
-    return putative_anchors_freq, putative_barcodes_freq, reads_lookup_db_path
-
+    return putative_anchors_freq, putative_barcodes_freq
