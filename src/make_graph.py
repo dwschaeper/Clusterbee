@@ -13,179 +13,6 @@ from scipy.special import logsumexp
 logger = logging.getLogger(__name__)
 
 
-def build_anchor_seed_membership(graph):
-    """Create deterministic initial membership with one anchor per seeded community.
-
-    Anchors each start in their own community while all non-anchor nodes share
-    a single catch-all community label.
-    """
-    anchor_indices = [idx for idx, node_type in enumerate(graph.vs['type']) if node_type == 'anchor']
-    membership = [0] * graph.vcount()
-
-    if not anchor_indices:
-        return membership
-
-    putative_label = len(anchor_indices)
-    for idx in range(graph.vcount()):
-        membership[idx] = putative_label
-
-    for community_id, vertex_idx in enumerate(anchor_indices):
-        membership[vertex_idx] = community_id
-
-    return membership
-
-
-def plot_knee(put_community_freq: dict[str, int]):
-    """
-    Finds realistic communities from the set of communities.
-    Calculates knee on non-log (linear) scale.
-
-    Args:
-        put_community_freq (dict): A dict of all the communities: freq
-
-    Returns:
-        int: cutoff to use for community freq
-    """
-    freqs = np.array(sorted(put_community_freq.values(), reverse=True), dtype=float)
-    ranks = np.arange(1, len(freqs) + 1, dtype=float)
-
-    if len(freqs) == 0:
-        return 0
-    if len(freqs) < 3:
-        return int(freqs[0])
-
-    # Calculate knee using linear space (non-log)
-    start_points = np.array([ranks[0], freqs[0]], dtype=float)
-    end_points = np.array([ranks[-1], freqs[-1]], dtype=float)
-    line_vector = end_points - start_points
-    norm = np.linalg.norm(line_vector)
-    
-    if norm == 0.0:
-        knee_index = 0
-    else:
-        line_unit = line_vector / norm
-        points = np.column_stack((ranks, freqs))
-        point_vectors = points - start_points
-        projection_lengths = np.dot(point_vectors, line_unit)
-        projected_points = np.outer(projection_lengths, line_unit) + start_points
-        distances = np.linalg.norm(points - projected_points, axis=1)
-        knee_index = int(np.argmax(distances))
-    
-    cutoff_freq = int(freqs[knee_index])
-
-    # plot
-    plt.figure(figsize=(6,5))
-    plt.plot(ranks, freqs)
-    plt.scatter(ranks[knee_index], cutoff_freq, s=80)
-    plt.axvline(ranks[knee_index], linestyle='--')
-    plt.axhline(cutoff_freq, linestyle='--')
-    plt.xlabel('Barcode Rank')
-    plt.ylabel('Read Count')
-    plt.title('Anchor Barcode Knee Plot')
-    plt.tight_layout()
-    plt.savefig('anchor_barcode_knee_plot.png')
-    plt.close()
-
-    return cutoff_freq
-
-
-def PELT_changepoints(put_community_freq):
-    sizes = np.array(sorted(put_community_freq.values(), reverse=True), dtype=float)
-    signal = sizes.reshape((-1, 1))
-
-    # TRY MIXTURE MODELS..GULP
-
-    model = rpt.Pelt(model='rbf').fit(signal)
-    penalty = 15
-    changepoints = model.predict(pen=penalty)
-    logger.info('PELT breakpoints p=15: %s', str(changepoints))
-
-    return changepoints[3]   # TODO: make method to grab a breakpoint
-
-def estimate_nb_params(vals, weights):
-    """
-    weighted method-of-moments estimate for negative binomial parameters
-    """
-    w = weights / weights.sum()
-    mean = np.sum(w * vals)
-    var = np.sum(w * (vals - mean) ** 2)
-    var = max(var, mean + 1e-3)  # don't allow it to be too low
-    
-    r = mean**2 / (var - mean)
-    r = max(r, 1e-3)
-
-    p = r / (r + mean)
-
-    return r, p
-
-
-def fit_nb_mixture(counts, max_iter=200, tol=1e-6):
-    x = np.asarray(counts, dtype=int)
-    
-    median =np.median(x)
-    z = (x > median).astype(float)
-    pi = z.mean()
-
-    r1, p1 = estimate_nb_params(x, 1 - z + 1e-3)
-    r2, p2 = estimate_np_params(x, z + 1e-3)
-
-    prev_ll = -np.inf
-    
-    for _ in range(max_iter):
-        log_prob1 = np.log(1 - pi) + nbinom.logpmf(x, r1, p1)
-        log_prob2 = np.log(pi) + nbinom.logpmf(x, r2, p2)
-
-        denom = logsumexp([log_prob1, log_prob2], axis=0)
-        gamma = np.exp(log_prob2 - denom)
-
-        pi = gamma.mean()
-        r1, p1 = estimate_nb_params(x, 1 - gamma)
-        r2, p2 = estimate_np_params(x, gamma)
-
-        ll = denom.sum()
-
-        if np.abs(ll - prev_ll) < tol:
-            break
-        prev_ll = ll
-
-    mean1 = r1 * (1 - p1) / p1
-    mean2 = r2 * (1 - p2) / p2
-    if mean1 > mean2:
-        gamma = 1 - gamma
-        r1, r2 = r2, r1
-        p1, p2 = p2, p1
-        pi = 1- pi
-
-    assignments = (gamma > 0.5).astype(int)
-    real_counts = np.sort(x[assignments == 1])
-    threshold = (real_counts[0] if len(real_counts) > 0 else None)
-
-    return { "probs_real": gamma,
-             "assignments": assignemts,
-             "threshold": threshold,
-             "params": {
-                        "noise": {
-                                  "r": r1,
-                                  "p": p1
-                                  },
-                         "real": {
-                                  "r": r2,
-                                  "p": p2
-                                  },
-                         "mixing_fraction": pi
-                         }
-            }
-
-
-def filter_anchorless(graph, anchorless):
-    delete_nodes = []
-    for name, community in zip(graph.vs['name'], graph.vs['community']):
-        if community in anchorless:
-            delete_nodes.append(name)
-    logger.info('Number of nodes in anchorless communities that will be deleted: %d', len(delete_nodes))
-    graph.delete_vertices(delete_nodes)
-
-
 def get_anchor_communities(graph):
     anchor_communities = set()
     anchorless_communities = set(graph.vs['community'])
@@ -196,15 +23,6 @@ def get_anchor_communities(graph):
     anchorless_communities -= anchor_communities
 
     return anchor_communities, anchorless_communities
-
-
-def knee_filter(graph, community_freq, cutoff):
-    delete_nodes = []
-    for name, community in zip(graph.vs['name'], graph.vs['community']):
-        if community_freq[community] < cutoff:
-            delete_nodes.append(name)
-
-    graph.delete_vertices(delete_nodes)
 
 
 def write_info(graph, header):
@@ -265,53 +83,25 @@ def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
     graph.vs['degree'] = graph.degree()
 
 
-def refine_multi_anchor_communities(graph):
-    """Refine Ledien communities for communities with >1 anchors.
+def get_anchor_communities(graph):
+    anchor_communities = set()
+    anchorless_communities = set(graph.vs['community'])
 
-    Args:
-        graph (iGraph): initial graph with Leiden clusters
-    """
-    initial_membership = graph.vs['community']
-    anchor_counts = defaultdict(int)
-
-    for community, node_type in zip(initial_membership, graph.vs['type']):
+    for community, node_type in zip(graph.vs['community'], graph.vs['type']):
         if node_type == 'anchor':
-            anchor_counts[community] += 1
+            anchor_communities.add(community)
+    anchorless_communities -= anchor_communities
 
-    target_communities = {community for community, count in anchor_counts.items() if count > 1}
-    if not target_communities:
-        logger.info('No multi-anchor Louvain communities found for Leiden refinement.')
-        return
+    return anchor_communities, anchorless_communities
 
-    logger.info('Refining %d multi-anchor Louvain communities with Leiden.', len(target_communities))
-    refined_membership = list(initial_membership)
-    next_label = max(initial_membership) + 1
-    refined_count = 0
 
-    for community in sorted(list(target_communities)):
-        vertex_indices = [idx for idx, label in enumerate(initial_membership) if label == community]
-        if len(vertex_indices) < 2:
-            continue
-
-        subgraph = graph.subgraph(sorted(vertex_indices))
-        #partition = subgraph.community_multilevel(weights='weight')
-        partition = la.find_partition(graph, la.ModularityVertexPartition, seed=seed, weights='weight')
-
-        local_membership = partition.membership
-        local_clusters = sorted(set(local_membership))
-        if len(local_clusters) <= 1:
-            continue
-
-        cluster_to_global = {cluster_id: next_label + offset for offset, cluster_id in enumerate(local_clusters)}
-        next_label += len(local_clusters)
-
-        for sub_idx, vertex_idx in enumerate(vertex_indices):
-            refined_membership[vertex_idx] = cluster_to_global[local_membership[sub_idx]]
-
-        refined_count += 1
-
-    graph.vs['community'] = refined_membership
-    logger.info('Leiden refinement split %d Louvain communities.', refined_count)
+def filter_anchorless(graph, anchorless):
+    delete_nodes = []
+    for name, community in zip(graph.vs['name'], graph.vs['community']):
+        if community in anchorless:
+            delete_nodes.append(name)
+    logger.info('Number of nodes in anchorless communities that will be deleted: %d', len(delete_nodes))
+    graph.delete_vertices(delete_nodes)
 
 
 def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
@@ -348,26 +138,19 @@ def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
     add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
 
     # communities = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', n_iterations=-1)
-    initial_membership = build_anchor_seed_membership(graph)
     logger.info('resolution parameter: ' + str(resolution))
     logger.info('iterations: ' + str(iterations))
-    print(seed)
-    communities = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', n_iterations=iterations, resolution_parameter=resolution) # try fewer iterations
-    #communities = graph.community_multilevel(weights='weight')
+    communities = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', n_iterations=iterations, resolution_parameter=resolution)
     graph.vs['community'] = communities.membership
-    write_info(graph, '\nCOMMUNITY STATS AFTER INITIAL CLUSTERING\n')
-    #refine_multi_anchor_communities(graph)
-    #write_info(graph, '\nCOMMUNITY STATS AFTER LEDIEN REFINEMENT\n')
+    anchored_communities, anchorless_communities = get_anchor_communities(graph)
+    if len(anchorless_communities) > 0:
+        filter_anchorless(graph, anchorless_communities)
+    write_info(graph, '\nCOMMUNITY STATS\n')
 
 	# write graph pre-filtering
     graph.write('graph_edges.ncol', weights='weight')
     graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
     graph_data.to_csv('node_attributes.tsv', sep='\t', index=False)
-
-    anchored_communities, anchorless_communities = get_anchor_communities(graph)
-    filter_anchorless(graph, anchorless_communities)
-    logger.info('Number of communities with anchors: %d', len(anchored_communities))
-    logger.info('Number of communities without anchors: %d', len(anchorless_communities))
 
     # compute per-community total reads
     community_freq = defaultdict(int)
@@ -379,14 +162,4 @@ def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
             if node_type == 'anchor':
                 out.write(f'{name},{community},{community_freq[community]}\n')
 
-    # original knee cutoff (from existing algorithm)
-    cutoff = plot_knee(community_freq)
-    cutoff = PELT_changepoints(community_freq)
-    logger.info('Cutoff threshold from knee plot of filtered community sizes: %d', cutoff)
-
-    # apply cutoff
-    knee_filter(graph, community_freq, cutoff)
-
-    write_info(graph, '\nCOMMUNITY STATS AFTER FILTERING\n')
-    graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
     return graph_data
