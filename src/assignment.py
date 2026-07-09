@@ -21,7 +21,7 @@ def _worker_process_batch(args):
     barcode_to_community = _worker_barcode_to_community
     community_to_anchor = _worker_community_to_anchor
 
-    shard = f"assigned_reads.part_{worker_id}.fasta.gz"
+    shard = f"assigned_reads.part_{worker_id}.fastq.gz"
 
     buf = []
     append = buf.append
@@ -29,7 +29,7 @@ def _worker_process_batch(args):
 
     with igzip.open(shard, "wt") as out:
         for row in batch:
-            read_id, barcode_string, umi_string, seq  = row.rstrip("\n").split("\t")
+            read_id, barcode_string, umi_string, seq, seq_qual  = row.rstrip("\n").split("\t")
 
             barcode = None
             community = None
@@ -50,8 +50,10 @@ def _worker_process_batch(args):
             local_position_dist[pos] += 1
 
             append(
-                f">{read_id}|barcode={barcode}|community={community}"
-                f"|community_anchor={community_to_anchor[community]}\n{seq}"
+                f"@{read_id}|barcode={barcode}|community={community}|community_anchor={community_to_anchor[community]}\n"
+                f"{seq}\n"
+                f"+\n"
+                f"{seq_qual}"
             )
 
             if len(buf) >= flush_threshold:
@@ -152,7 +154,7 @@ def assignment(graph_data, anchor_set, processes=None, batch_size=250000, max_pe
     logger.info("Merging FASTA shards")
 
     subprocess.run(
-        "cat assigned_reads.part_*.fasta.gz > assigned_reads.fasta.gz",
+        "cat assigned_reads.part_*.fastq.gz > assigned_reads.fastq.gz",
         shell=True,
         check=True
     )
