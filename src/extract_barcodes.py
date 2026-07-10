@@ -1,18 +1,29 @@
-from Bio.SeqIO.QualityIO import FastqGeneralIterator
+"""Extract anchor and putative barcodes from FASTQ reads.
+
+The extraction pipeline detects polyT tails and adapter placement, then scans for
+barcode/UMI windows and classifies likely real anchors with a 2-component
+negative-binomial mixture model.
+"""
+
 from Bio.Seq import reverse_complement
-import numpy as np
-from isal import igzip
-from collections import defaultdict, Counter
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from Bio.SeqIO.QualityIO import FastqGeneralIterator
+from collections import Counter, defaultdict
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
+import logging
+import os
+from typing import Any
+
+import edlib
+from isal import igzip
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy.special import logsumexp
 from scipy.stats import nbinom
 from scipy.stats import norm
-from scipy.special import logsumexp
-import os
-import logging
-import matplotlib.pyplot as plt
-import edlib
 from sklearn.linear_model import LinearRegression
+
+import config
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +31,14 @@ logger = logging.getLogger(__name__)
 _worker_processor = None
 
 
-class BarcodeBatchProcessor:
-    """
-    Worker class that processes batches of FastQ records.
+class _BarcodeBatchProcessor:
+    """Worker-side barcode extraction processor.
+
+    Instances are created once per process and reused for many record batches.
     """
 
     def __init__(self, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int, search_range: int,
-                 min_qual: int, whitelist: set, write_upstream_region: bool = False):
+                 min_qual: int, whitelist: set[str], write_upstream_region: bool = False):
         """
         Initialize the processor with parameters for barcode extraction.
 
@@ -448,8 +460,8 @@ class BarcodeBatchProcessor:
         return returning    
 
 
-def _worker_init(polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int, search_range: int, min_qual: int, whitelist: set,
-                 write_upstream_region: bool):
+def _worker_init(polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int, search_range: int, min_qual: int, whitelist: set[str],
+                 write_upstream_region: bool) -> None:
     """
     Initializer executed in each worker process to set up a local processor.
 
@@ -464,12 +476,12 @@ def _worker_init(polyt_min_length: int, adapter: str, barcode_len: int, umi_len:
         write_upstream_region (bool): Whether to emit trimmed upstream sequence lines for output
     """
     global _worker_processor
-    _worker_processor = BarcodeBatchProcessor(polyt_min_length, adapter, barcode_len, umi_len, search_range,
+    _worker_processor = _BarcodeBatchProcessor(polyt_min_length, adapter, barcode_len, umi_len, search_range,
                                               min_qual, whitelist,
                                               write_upstream_region=write_upstream_region)
 
 
-def _worker_process_batch(records_batch: list) -> dict:
+def _worker_process_batch(records_batch: list[tuple[str, str, str]]) -> dict[str, Any]:
     """
     Module-level entry point used by ProcessPoolExecutor workers.
 
@@ -500,7 +512,7 @@ def _worker_process_batch(records_batch: list) -> dict:
     return _worker_processor.process(records_batch)
 
 
-def _safe_future_result(future) -> dict:
+def _safe_future_result(future: Future[dict[str, Any]]) -> dict[str, Any]:
     """
     Return future.result() ensuring the exception is logged with traceback.
     Worker exceptions are logged here then re-raised so callers still fail fast.
@@ -530,7 +542,7 @@ def _safe_future_result(future) -> dict:
         raise
 
 
-def estimate_nb_params(vals: np.array, weights: np.array) -> tuple[int, int]:
+def _estimate_nb_params(vals: np.ndarray, weights: np.ndarray) -> tuple[float, float]:
     """
     weighted method-of-moments estimate for negative binomial parameters
 
@@ -560,9 +572,9 @@ def estimate_nb_params(vals: np.array, weights: np.array) -> tuple[int, int]:
     return r, p
 
 
-def fit_nb_mixture_2component(anchor_dist: Counter, probability_threshold: float, expected_cells: int | None =None,
-                              prior_strength: int = 200, max_iter: int = 200, tol: float = 1e-6,
-                              output_csv: str ='anchor_probabilities.csv') -> dict:
+def _fit_nb_mixture_2component(anchor_dist: Counter[str], probability_threshold: float, output_csv: str | None = None,
+                              expected_cells: int | None = None, prior_strength: int = 200, max_iter: int = 200,
+                              tol: float = 1e-6) -> dict[str, Any]:
     """
     Deterministic 2-component NB mixture (noise + real).
 
@@ -614,8 +626,8 @@ def fit_nb_mixture_2component(anchor_dist: Counter, probability_threshold: float
         pi = np.clip(pi, 1e-6, None)
         pi /= pi.sum()
 
-    r_noise, p_noise = estimate_nb_params(x, z_noise + 1e-3)
-    r_real, p_real = estimate_nb_params(x, z_real + 1e-3)
+    r_noise, p_noise = _estimate_nb_params(x, z_noise + 1e-3)
+    r_real, p_real = _estimate_nb_params(x, z_real + 1e-3)
 
     prev_ll = -np.inf
 
@@ -637,8 +649,8 @@ def fit_nb_mixture_2component(anchor_dist: Counter, probability_threshold: float
         pi = np.clip(pi, 1e-6, None)
         pi /= pi.sum()
 
-        r_noise, p_noise = estimate_nb_params(x, gamma[0])
-        r_real, p_real = estimate_nb_params(x, gamma[1])
+        r_noise, p_noise = _estimate_nb_params(x, gamma[0])
+        r_real, p_real = _estimate_nb_params(x, gamma[1])
 
         # enforce ordering (real must have larger mean)
         mean_noise = r_noise * (1 - p_noise) / p_noise
@@ -664,13 +676,14 @@ def fit_nb_mixture_2component(anchor_dist: Counter, probability_threshold: float
     real_counts = np.sort(x[assignments == 1])
     threshold = real_counts[0] if len(real_counts) > 0 else None
 
-    with open(output_csv, "w") as f:
-        f.write("barcode,count,prob_noise,prob_real\n")
+    if output_csv is not None:
+        with open(output_csv, "w") as f:
+            f.write("barcode,count,prob_noise,prob_real\n")
 
-        sorted_items = sorted(anchor_dist.items(), key=lambda kv: kv[1], reverse=True)
+            sorted_items = sorted(anchor_dist.items(), key=lambda kv: kv[1], reverse=True)
 
-        for (barcode, count), noise_prob, real_prob in zip(sorted_items, gamma[0], gamma[1]):
-            f.write(f"{barcode},{count},{noise_prob:.6f},{real_prob:.6f}\n")
+            for (barcode, count), noise_prob, real_prob in zip(sorted_items, gamma[0], gamma[1]):
+                f.write(f"{barcode},{count},{noise_prob:.6f},{real_prob:.6f}\n")
 
     return {
         "probs_real": probs_real,
@@ -692,8 +705,8 @@ def fit_nb_mixture_2component(anchor_dist: Counter, probability_threshold: float
     }
 
 
-def plot_anchor_probs(anchor_counter: Counter, probs_real: np.array, probs_noise: np.array, cutoff: int, probability_threshold: float, 
-                      outfile: str ='model_anchor_frequency_thresholds_and_probability.png'):
+def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, probs_noise: np.ndarray, cutoff: int | None, probability_threshold: float,
+                      outfile: str) -> None:
     """
     Plot:
     1) ranked anchor counts
@@ -735,8 +748,8 @@ def plot_anchor_probs(anchor_counter: Counter, probs_real: np.array, probs_noise
 
 def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int,
                      search_range: int, min_qual: int, expected_cells: int,
-                     whitelist: set = None, processes: int = None, batch_size: int = 10000,
-                     upstream_region_tsv: str = None, probability_threshold=0.85, max_iter=200) -> tuple[Counter, Counter]:
+                     whitelist: set[str] | None = None, processes: int | None = None, batch_size: int = 10000,
+                     upstream_region_tsv: str | None = None, probability_threshold: float = 0.85, max_iter: int = 200) -> tuple[dict[str, int], dict[str, int]]:
     """
     Given a fastq file, extract all the barcodes.
 
@@ -753,7 +766,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
         processes (int):                 Number of worker processes (defaults to cpu_count() - 1)
         batch_size (int):                Number of reads per worker task (default 1000)
         upstream_region_tsv (str):       Output path for optional TSV of search-window-to-polyT sequences
-        probability_threshold (float):             The probability required from the NB mixture to be considered a true anchor.
+        probability_threshold (float):   The probability required from the NB mixture to be considered a true anchor.
         max_iter (int):                  The maximum number of iteration for EM.
 
     Returns:
@@ -774,6 +787,12 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
     both_strands_valid = 0
     adapter_found = 0
     max_workers = processes if processes and processes > 0 else max(1, (os.cpu_count() or 2) - 1)
+    
+    # initialize file handles
+    putative_barcode_file = os.path.join(config.GLOBAL_OUTDIR, '.putative_barcodes')
+    anchor_freqs_file = os.path.join(config.GLOBAL_OUTDIR, '.anchor_freqs')
+    probability_figure = os.path.join(config.GLOBAL_OUTDIR, f'{config.GLOBAL_PREFIX}_anchor_frequency_thresholds_and_probability.png')
+    probabilities_csv = os.path.join(config.GLOBAL_OUTDIR, f'{config.GLOBAL_PREFIX}_anchor_probabilities.csv')
 
     logger.info('Using %d worker processes (batch_size=%d)', max_workers, batch_size)
 
@@ -783,11 +802,11 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
     # start a process pool
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
                                       initargs=(polyt_min_length, adapter, barcode_len, umi_len, search_range,
-                                                min_qual, whitelist, upstream_region_tsv is not None))
+                                                min_qual, whitelist or set(), upstream_region_tsv is not None))
 
     optional_upstream_cm = open(upstream_region_tsv, 'w') if upstream_region_tsv is not None else nullcontext(None)
 
-    with (open('.putative_barcodes', 'w') as putative_set_file, optional_upstream_cm as upstream_region_file, executor_cm as executor):
+    with (open(putative_barcode_file, 'w') as putative_set_file, optional_upstream_cm as upstream_region_file, executor_cm as executor):
         if upstream_region_file is not None:
             upstream_region_file.write('read_id\tsearch_start_to_polyt\n')
 
@@ -856,14 +875,22 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
                 if processed % 500000 == 0:
                     logger.info('Extracted barcodes from %d reads', processed)
 
-    with open('.anchor_freqs', 'w') as out:
+    with open(anchor_freqs_file, 'w') as out:
         for key, value in putative_anchors_freq.items():
             out.write(f'{key},{value}\n')
 
     prior_count = len(putative_anchors_freq)
-    results = fit_nb_mixture_2component(putative_anchors_freq, probability_threshold, expected_cells=expected_cells, max_iter=max_iter, output_csv='anchor_probabilities.csv')
+    results = _fit_nb_mixture_2component(
+        putative_anchors_freq,
+        probability_threshold,
+        output_csv=probabilities_csv,
+        expected_cells=expected_cells,
+        max_iter=max_iter,
+    )
     cutoff = results['threshold']
-    plot_anchor_probs(putative_anchors_freq, results['probs_real'], results['probs_noise'], cutoff, probability_threshold, outfile='anchor_mixture_model.png')
+    _plot_anchor_probs(putative_anchors_freq, results['probs_real'], results['probs_noise'], cutoff, probability_threshold, probability_figure)
+    if cutoff is None:
+        cutoff = 0
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value >= cutoff}
 
     # log information

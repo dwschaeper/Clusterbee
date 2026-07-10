@@ -1,19 +1,40 @@
-from collections import defaultdict, Counter
+"""
+Build and annotate the barcode graph prior to read assignment.
+
+This module consumes edge lists emitted during barcode matching and performs
+Leiden community detection with anchor-presence filtering.
+"""
+
+from collections import Counter, defaultdict
+import logging
+import os
+
 import igraph as ig
 import leidenalg as la
-import random
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-import logging
+import numpy as np
+import pandas as pd
+import random
 import ruptures as rpt
-from scipy.stats import nbinom
 from scipy.special import logsumexp
+from scipy.stats import nbinom
+
+import config
 
 logger = logging.getLogger(__name__)
 
 
-def get_anchor_communities(graph):
+def _get_anchor_communities(graph: ig.Graph) -> tuple[set[int], set[int]]:
+    """
+    Split communities into those with anchors and those without.
+
+    Args:
+        graph (ig.Graph): Graph with ``community`` and ``type`` vertex
+            attributes.
+
+    Returns:
+        tuple[set[int], set[int]]: ``(anchored_communities, anchorless_communities)``.
+    """
     anchor_communities = set()
     anchorless_communities = set(graph.vs['community'])
 
@@ -25,7 +46,14 @@ def get_anchor_communities(graph):
     return anchor_communities, anchorless_communities
 
 
-def write_info(graph, header):
+def _write_info(graph: ig.Graph, header: str) -> None:
+    """Log per-community summary statistics.
+
+    Args:
+        graph (ig.Graph): Graph with ``community``, ``type``, and ``freq``
+            attributes.
+        header (str): Header line emitted before statistics.
+    """
     anchor_freq = dict.fromkeys(set(graph.vs['community']), 0)
     reads_freq = defaultdict(int)
     node_count = defaultdict(int)
@@ -61,7 +89,16 @@ def write_info(graph, header):
                multi_anchor_communities, str(Counter(anchor_freq.values())), str(Counter(node_count.values())))   
         
 
-def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
+def _add_node_attributes(graph: ig.Graph, put_anchor_freq: dict[str, int], put_barcode_freq: dict[str, int]) -> None:
+    """
+    Populate frequency/type/degree node attributes used downstream.
+
+    Args:
+        graph (ig.Graph): Graph containing barcode names in
+            ``graph.vs['name']``.
+        put_anchor_freq (dict[str, int]): Anchor barcode frequencies.
+        put_barcode_freq (dict[str, int]): Putative barcode frequencies.
+    """
     put_anchors = set(put_anchor_freq.keys())
     freqs = []
 
@@ -83,19 +120,13 @@ def add_node_attributes(graph, put_anchor_freq, put_barcode_freq):
     graph.vs['degree'] = graph.degree()
 
 
-def get_anchor_communities(graph):
-    anchor_communities = set()
-    anchorless_communities = set(graph.vs['community'])
+def _filter_anchorless(graph: ig.Graph, anchorless: set[int]) -> None:
+    """Delete vertices belonging to communities that lack anchors.
 
-    for community, node_type in zip(graph.vs['community'], graph.vs['type']):
-        if node_type == 'anchor':
-            anchor_communities.add(community)
-    anchorless_communities -= anchor_communities
-
-    return anchor_communities, anchorless_communities
-
-
-def filter_anchorless(graph, anchorless):
+    Args:
+        graph (ig.Graph): Graph to mutate in place.
+        anchorless (set[int]): Community identifiers to remove.
+    """
     delete_nodes = []
     for name, community in zip(graph.vs['name'], graph.vs['community']):
         if community in anchorless:
@@ -104,7 +135,7 @@ def filter_anchorless(graph, anchorless):
     graph.delete_vertices(delete_nodes)
 
 
-def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
+def make_graph(put_anchor_freq: dict[str, int], put_barcode_freq: dict[str, int], resolution: float, iterations: int) -> dict[str, list]:
     """Build graph, run Louvain with targeted Leiden refinement, apply knee cutoff, and optionally write diagnostics.
 
     Args:
@@ -113,7 +144,9 @@ def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
         resolution (float):      resolution for leiden calculation
         iterations (int):        number of iterations used in leiden clustering
     """
-    seed=357
+    # initialize values
+    seed = 357
+    logger.section('GRAPH CONSTRUCTION')
     logger.info('making the graph')
     edges = []
     weights = []
@@ -121,7 +154,11 @@ def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
     anchor_nodes = set(put_anchor_freq.keys())
     anchor_anchor_edges = 0
 
-    with open('.graph_edges') as graph_file:
+    # initialize file handles
+    graph_edge_file = os.path.join(config.GLOBAL_OUTDIR, '.graph_edges')
+    community_size_csv = os.path.join(config.GLOBAL_OUTDIR, f'{config.GLOBAL_PREFIX}_community_sizes.csv')
+
+    with open(graph_edge_file) as graph_file:
         for line in graph_file:
             node1, node2, weight = line.strip().split('\t')
             edges.append((node1, node2))
@@ -135,31 +172,30 @@ def make_graph(put_anchor_freq, put_barcode_freq, resolution, iterations):
     graph.es['weight'] = weights
     logger.info('Number of anchor-anchor edges: %d', anchor_anchor_edges)
 
-    add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
+    _add_node_attributes(graph, put_anchor_freq, put_barcode_freq)
 
-    # communities = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', n_iterations=-1)
     logger.info('resolution parameter: ' + str(resolution))
     logger.info('iterations: ' + str(iterations))
     communities = la.find_partition(graph, la.CPMVertexPartition, seed=seed, weights='weight', n_iterations=iterations, resolution_parameter=resolution)
     graph.vs['community'] = communities.membership
-    anchored_communities, anchorless_communities = get_anchor_communities(graph)
+    _anchored_communities, anchorless_communities = _get_anchor_communities(graph)
     if len(anchorless_communities) > 0:
-        filter_anchorless(graph, anchorless_communities)
-    write_info(graph, '\nCOMMUNITY STATS\n')
-
-	# write graph pre-filtering
-    graph.write('graph_edges.ncol', weights='weight')
-    graph_data = pd.DataFrame({'name': graph.vs['name'], 'community': graph.vs['community'], 'type': graph.vs['type'], 'freq': graph.vs['freq']})
-    graph_data.to_csv('node_attributes.tsv', sep='\t', index=False)
+        _filter_anchorless(graph, anchorless_communities)
+    _write_info(graph, '\nCOMMUNITY STATS\n')
 
     # compute per-community total reads
     community_freq = defaultdict(int)
     for community, freq in zip(graph.vs['community'], graph.vs['freq']):
         community_freq[community] += freq
 
-    with open('community_sizes.csv', 'w') as out:
+    with open(community_size_csv, 'w') as out:
         for name, community, node_type in zip(graph.vs['name'], graph.vs['community'], graph.vs['type']):
             if node_type == 'anchor':
                 out.write(f'{name},{community},{community_freq[community]}\n')
 
-    return graph_data
+    return {
+        'name': list(graph.vs['name']),
+        'community': list(graph.vs['community']),
+        'type': list(graph.vs['type']),
+        'freq': list(graph.vs['freq']),
+    }
