@@ -8,7 +8,7 @@ from src.edge_construction_vectorized_levenshtein_fallback import construct_grap
 from src.make_graph import make_graph
 from src.assignment import assignment
 
-from config import GLOBAL_PREFIX, GLOBAL_OUTDIR, set_global_prefix, set_global_outdir
+from config import set_global_prefix, set_global_outdir
 
 
 setup_logging(level=logging.INFO, logfile="honeycomb.log")

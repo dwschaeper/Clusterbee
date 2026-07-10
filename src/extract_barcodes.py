@@ -7,7 +7,7 @@ negative-binomial mixture model.
 
 from Bio.Seq import reverse_complement
 from Bio.SeqIO.QualityIO import FastqGeneralIterator
-from collections import Counter, defaultdict
+from collections import Counter
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from contextlib import nullcontext
 import logging
@@ -20,8 +20,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.special import logsumexp
 from scipy.stats import nbinom
-from scipy.stats import norm
-from sklearn.linear_model import LinearRegression
 
 import config
 
@@ -286,7 +284,7 @@ class _BarcodeBatchProcessor:
         end = None
         current_barcode_region_len = None
         for location in aln['locations']:
-            if end == None:
+            if end is None:
                 end = location[1]
                 current_barcode_region_len = upstream_len - end
             elif abs(current_barcode_region_len  - self.buffer_dist) > abs((upstream_len - location[1]) - self.buffer_dist):
