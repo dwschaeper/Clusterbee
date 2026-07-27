@@ -20,10 +20,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.special import logsumexp
 from scipy.stats import nbinom
-from scipy.stats import norm
-from scipy.special import logsumexp
 
-import pandas as pd
 import config
 
 logger = logging.getLogger(__name__)
