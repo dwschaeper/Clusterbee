@@ -5,9 +5,9 @@ This module consumes edge lists emitted during barcode matching and performs
 Leiden community detection with anchor-presence filtering.
 """
 
-from collections import Counter, defaultdict
 import logging
 import os
+from collections import Counter, defaultdict
 
 import igraph as ig
 import leidenalg as la

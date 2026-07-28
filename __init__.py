@@ -1,3 +1,3 @@
-from .config import GLOBAL_PREFIX, GLOBAL_OUTDIR, set_global_prefix, set_global_outdir
+from .config import GLOBAL_OUTDIR, GLOBAL_PREFIX, set_global_outdir, set_global_prefix
 
-__all__ = ["GLOBAL_PREFIX", "GLOBAL_OUTDIR", "set_global_prefix", "set_global_outdir"]
+__all__ = ["GLOBAL_OUTDIR", "GLOBAL_PREFIX", "set_global_outdir", "set_global_prefix"]

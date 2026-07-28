@@ -1,15 +1,16 @@
 """
-Construct barcode graph edges with vectorized Hamming and Myers fallback.
+Construct barcode graph edges with vectorized Hamming and Levenshtein distance fallback.
 
 This module assigns putative barcodes to anchors, then emits weighted edge lists
 for downstream community detection.
 """
 
+
+import logging
+import os
 from collections import defaultdict
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from itertools import combinations
-import logging
-import os
 from typing import Any
 
 import edlib
@@ -23,7 +24,7 @@ TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
 _worker_processor = None
 # Byte-popcount lookup for NumPy versions without np.bit_count.
 # This is over uint8 values (0..255), independent of barcode alphabet size.
-_BYTE_POPCOUNT_TABLE = np.array([bin(i).count('1') for i in range(256)], dtype=np.uint8)
+_BYTE_POPCOUNT_TABLE = np.array([(i).bit_count() for i in range(256)], dtype=np.uint8)
 
 
 class _VectorizedBatchProcessor:
@@ -39,12 +40,12 @@ class _VectorizedBatchProcessor:
         keep_best_match_only (bool):              Keep only minimum-distance ties.
         kmer_size (int):                          K-mer size for fallback prefilter.
         min_kmer_matches (int):                   Minimum shared k-mers to evaluate a candidate.
-        max_myers_candidates (int):               Maximum fallback candidates per putative.
+        max_levenshtein_candidates (int):               Maximum fallback candidates per putative.
     """
 
     def __init__(self, max_hamming_dist: int, max_levenshtein_dist: int, anchor_barcodes: tuple[str, ...], 
                 anchor_encoded: np.ndarray, anchor_kmer_index: dict[str, list[int]], keep_best_match_only: bool,
-                kmer_size: int, min_kmer_matches: int, max_myers_candidates: int) -> None:
+                kmer_size: int, min_kmer_matches: int, max_levenshtein_candidates: int) -> None:
         self.max_hamming_dist = max_hamming_dist
         self.max_levenshtein_dist = max_levenshtein_dist
         self.anchor_barcodes = anchor_barcodes
@@ -53,7 +54,7 @@ class _VectorizedBatchProcessor:
         self.keep_best_match_only = keep_best_match_only
         self.kmer_size = kmer_size
         self.min_kmer_matches = min_kmer_matches
-        self.max_myers_candidates = max_myers_candidates
+        self.max_levenshtein_candidates = max_levenshtein_candidates
 
 
     @staticmethod
@@ -101,12 +102,12 @@ class _VectorizedBatchProcessor:
             list[str]: The kmers
         """
         kmers = []
-        for start in range(0, len(putative_barcode) - self.kmer_size + 1):
+        for start in range(len(putative_barcode) - self.kmer_size + 1):
             kmers.append(putative_barcode[start: start + self.kmer_size])
         return kmers
     
 
-    def _kmer_filter_myers(self, putative_barcode: str) -> list[tuple[int, int]]:
+    def _kmer_filter_levenshtein(self, putative_barcode: str) -> list[tuple[int, int]]:
         """
         Filter anchor set by minimum kmer matches to the putative barcode.
 
@@ -124,7 +125,7 @@ class _VectorizedBatchProcessor:
         filtered = [(count, anchor_idx) for anchor_idx, count in anchor_match_counts.items() if count >= self.min_kmer_matches]
         filtered = sorted(filtered, key=lambda x: (-x[0], x[1]))
 
-        return filtered[:self.max_myers_candidates]
+        return filtered[:self.max_levenshtein_candidates]
 
 
     def _edlib_alignment(self, query: str, target: str) -> int:
@@ -148,7 +149,7 @@ class _VectorizedBatchProcessor:
         return edit_dist
 
     
-    def _process_myers(self, putative_barcode: str) -> list[tuple[str, int]]:
+    def _process_levenshtein(self, putative_barcode: str) -> list[tuple[str, int]]:
         """
         Find the anchors that match the putative with edit distance.
 
@@ -158,7 +159,7 @@ class _VectorizedBatchProcessor:
         Returns:
             list[tuple[str, int]]: List of (anchor, edit_distance)
         """
-        candidates = self._kmer_filter_myers(putative_barcode)
+        candidates = self._kmer_filter_levenshtein(putative_barcode)
 
         results = []
         for _, anchor_idx in candidates:
@@ -172,7 +173,7 @@ class _VectorizedBatchProcessor:
 
     def process(self, records_batch: list[tuple[str, int]]) -> list[tuple[str, int, int, list[str], str]]:
         """
-        Process a batch of putative barcodes using Hamming first, then Myers fallback.
+        Process a batch of putative barcodes using Hamming first, then Levenshtein fallback.
         
         Args:
             records_batch (list[tuple[str, int]]): Batch of records with putative barcode and its frequency.
@@ -190,10 +191,10 @@ class _VectorizedBatchProcessor:
                 used = 'hamming'
                 matches = [(self.anchor_barcodes[idx], int(distances[idx])) for idx in valid_idx]
             else:
-                myers_matches = self._process_myers(putative_barcode)
-                if myers_matches:
-                    used = 'myers'
-                    matches = myers_matches
+                levenshtein_matches = self._process_levenshtein(putative_barcode)
+                if levenshtein_matches:
+                    used = 'levenshtein'
+                    matches = levenshtein_matches
                 else:
                     used = 'unmatched'
                     matches = []
@@ -212,20 +213,20 @@ class _VectorizedBatchProcessor:
 
 def _worker_init(max_hamming_dist: int, max_levenshtein_dist: int, anchor_barcodes: tuple[str, ...], 
                 anchor_encoded: np.ndarray, anchor_kmer_index: dict[str, list[int]], keep_best_match_only: bool,
-                kmer_size: int, min_kmer_matches: int, max_myers_candidates: int) -> None:
+                kmer_size: int, min_kmer_matches: int, max_levenshtein_candidates: int) -> None:
     """
     Initialize per-process _VectorizedBatchProcessor.
 
     Args:
-        max_hamming_dist (int):       Maximum hamming distance allowed for matches.
-        max_levenshtein_dist (int):   Maximum edit distance allowed for matches.
-        anchor_barcodes (tuple[str]): Anchor barcode strings.
-        anchor_encoded (list[np.ndarray):  Anchor barcode encodings (uint32).
-        anchor_kmer_index (dict):     Index related kmer to anchor index.
-        keep_best_match_only (bool):  Whether to keep only lowest-distance ties.
-        kmer_size (int):              K-mer size used for Myers fallback candidate prefiltering.
-        min_kmer_matches (int):       Minimum shared k-mers required to evaluate an anchor via Myers.
-        max_myers_candidates (int):   Maximum number of candidate anchors to send into Myers per putative.
+        max_hamming_dist (int):           Maximum hamming distance allowed for matches.
+        max_levenshtein_dist (int):       Maximum edit distance allowed for matches.
+        anchor_barcodes (tuple[str]):     Anchor barcode strings.
+        anchor_encoded (list[np.ndarray): Anchor barcode encodings (uint32).
+        anchor_kmer_index (dict):         Index related kmer to anchor index.
+        keep_best_match_only (bool):      Whether to keep only lowest-distance ties.
+        kmer_size (int):                  K-mer size used for Levenshtein fallback candidate prefiltering.
+        min_kmer_matches (int):           Minimum shared k-mers required to evaluate an anchor via Levenshtein distance.
+        max_levenshtein_candidates (int): Maximum number of candidate anchors to send into Levenshtein distance calculation per putative.
 
     Returns:
         None
@@ -240,7 +241,7 @@ def _worker_init(max_hamming_dist: int, max_levenshtein_dist: int, anchor_barcod
         keep_best_match_only,
         kmer_size,
         min_kmer_matches,
-        max_myers_candidates
+        max_levenshtein_candidates
         )
 
 
@@ -364,7 +365,7 @@ def _build_anchor_kmer_index(anchor_barcodes: tuple[str, ...], kmer_size: int) -
     """
     kmer_to_anchor = defaultdict(list)
     for anchor_idx, anchor in enumerate(anchor_barcodes):
-        for start in range(0, len(anchor) - kmer_size + 1):
+        for start in range(len(anchor) - kmer_size + 1):
             kmer_to_anchor[anchor[start:start + kmer_size]].append(anchor_idx)
     return kmer_to_anchor
 
@@ -428,40 +429,29 @@ def _combine_batch_results(results_batch: list[tuple[str, int, int | None, list[
 
 
 def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], max_hamming_dist: int, max_levenshtein_dist: int, barcode_len: int,
-                          processes: int = None, batch_size: int = 10000, keep_best_match_only: bool = False,
-                          kmer_size: int = 4, min_kmer_matches: int = 3, max_myers_candidates: int = 7) -> None:
+                          processes: int | None = None, batch_size: int = 10000, keep_best_match_only: bool = False,
+                          kmer_size: int = 4, min_kmer_matches: int = 3, max_levenshtein_candidates: int = 7) -> None:
     """
-    Build graph edges using vectorized Hamming matching with Myers fallback for Hamming misses.
+    Build graph edges using vectorized Hamming matching with Levenshtein distance fallback for Hamming misses.
 
     Args:
-        anchors (dict):         Anchor barcode -> frequency mapping.
-        putatives (dict):       Putative barcode -> frequency mapping.
-        max_hamming_dist (int):         Largest acceptable distance.
-        max_levenshtein_dist (int):
-        barcode_len (int):      Length of the barcode.
-        processes (int):        Number of worker processes (defaults to cpu_count()-1).
-        batch_size (int):       Number of putative barcodes to send per worker task.
-        keep_best_match_only (bool): Keep only lowest-distance ties when True; otherwise keep all valid matches.
-        kmer_size (int):        K-mer size for Myers fallback candidate filtering.
-        min_kmer_matches (int): Minimum shared k-mers required for Myers candidate anchors.
-        max_myers_candidates (int): Maximum number of candidate anchors to consider with Myers per putative.
+        anchors (dict):                   Anchor barcode -> frequency mapping.
+        putatives (dict):                 Putative barcode -> frequency mapping.
+        max_hamming_dist (int):           Largest acceptable distance for Hamming distance calculation.
+        max_levenshtein_dist (int):       Largest acceptable distance for Levenshtein distance calculation.
+        barcode_len (int):                Length of the barcode.
+        processes (int):                  Number of worker processes (defaults to cpu_count()-1).
+        batch_size (int):                 Number of putative barcodes to send per worker task.
+        keep_best_match_only (bool):      Keep only lowest-distance ties when True; otherwise keep all valid matches.
+        kmer_size (int):                  K-mer size for Levenshtein distance fallback candidate filtering.
+        min_kmer_matches (int):           Minimum shared k-mers required for Levenshtein distance candidate anchors.
+        max_levenshtein_candidates (int): Maximum number of candidate anchors to consider with Levenshtein distance per putative.
 
     Returns:
         None
     """
     logger.section('EDGE CONSTRUCTION')
     logger.info('Begin construction of edges')
-
-    if barcode_len > 16:
-        raise ValueError('uint32 2-bit barcode encoding supports barcode_len <= 16')
-    if kmer_size <= 0:
-        raise ValueError('kmer_size must be > 0')
-    if min_kmer_matches <= 0:
-        raise ValueError('min_kmer_matches must be > 0')
-    if max_myers_candidates <= 0:
-        raise ValueError('max_myers_candidates must be > 0')
-    if kmer_size > barcode_len:
-        raise ValueError('kmer_size must be <= barcode_len')
     
     # initialize file handles
     graph_edge_file = os.path.join(config.GLOBAL_OUTDIR, '.graph_edges')
@@ -488,9 +478,6 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
 
     max_workers = processes if processes and processes > 0 else max(1, (os.cpu_count() or 2) - 1)
 
-    logger.info('Using %d worker processes (batch_size=%d)', max_workers, batch_size)
-    logger.info('Myers fallback k-mer prefilter: k=%d, min_shared_kmers=%d, max_candidates=%d',
-                kmer_size, min_kmer_matches, max_myers_candidates)
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
                                       initargs=(
                                           max_hamming_dist,
@@ -501,7 +488,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
                                           keep_best_match_only,
                                           kmer_size,
                                           min_kmer_matches,
-                                          max_myers_candidates
+                                          max_levenshtein_candidates
                                       ))
 
     with open(graph_edge_file, "w") as graph_edges_f, executor_cm as executor:
@@ -528,7 +515,7 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
             results = _safe_future_result(future)
             _combine_batch_results(results, combined_result, anchors, keep_best_match_only)
 
-        for anchor, putatives_set in combined_result['anchor_neighborhood'].items():
+        for putatives_set in combined_result['anchor_neighborhood'].values():
             # Convert set to list for calculate_anchor_neighborhoods
             neighborhood_edges = _calculate_anchor_neighborhoods(list(putatives_set), max_hamming_dist)
             for neighborhood_edge in neighborhood_edges:
@@ -547,7 +534,6 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     logger.info('Number of putative barcodes with associated edges: %d', combined_result['putatives_with_matches'])
     logger.info('Number of putative barcodes without associated edges: %d', combined_result['putatives_without_matches'])
     logger.info('Assignment distribution: %s', str(combined_result['assigned_method']))
-    logger.info('Neighborhood edge count: %d', neighborhood_edge_count)
     logger.info('Distribution of putatives that match multiple anchors %s', str(combined_result['putative_barcodes_match_size']))
 
     anchor_sizes = [len(x) for x in combined_result['anchor_neighborhood'].values()]
