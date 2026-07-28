@@ -1,4 +1,4 @@
-# LR-scRNA-seq-GBBD
+# Honeycomb - Graph Based Barcode Deconvolution
 
 Barcode deconvolution and graph-based clustering pipeline for long-read single-cell RNA-seq data.
 
