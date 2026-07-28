@@ -5,19 +5,18 @@ barcode/UMI windows and classifies likely real anchors with a 2-component
 negative-binomial mixture model.
 """
 
-from Bio.Seq import reverse_complement
-from Bio.SeqIO.QualityIO import FastqGeneralIterator
-from collections import Counter
-from concurrent.futures import Future, ProcessPoolExecutor, as_completed
-from contextlib import nullcontext
 import logging
 import os
+from collections import Counter
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from typing import Any
 
 import edlib
-from isal import igzip
 import matplotlib.pyplot as plt
 import numpy as np
+from Bio.Seq import reverse_complement
+from Bio.SeqIO.QualityIO import FastqGeneralIterator
+from isal import igzip
 from scipy.special import logsumexp
 from scipy.stats import nbinom
 
@@ -36,7 +35,7 @@ class _BarcodeBatchProcessor:
     """
 
     def __init__(self, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int, search_range: int,
-                 min_qual: int, whitelist: set[str], write_upstream_region: bool = False):
+                 min_qual: int, whitelist: set[str]):
         """
         Initialize the processor with parameters for barcode extraction.
 
@@ -48,7 +47,6 @@ class _BarcodeBatchProcessor:
             search_range (int):           The range around the UMI length to look for exact matches
             min_qual (int):               The minimum average quality in a barcode for it to be considered
             whitelist (set):              The whitelist of cell barcodes
-            write_upstream_region (bool): Whether to emit trimmed upstream sequence lines for output
         """
         self.barcode_len = barcode_len
         self.adapter = adapter
@@ -56,7 +54,6 @@ class _BarcodeBatchProcessor:
         self.search_range = search_range
         self.min_qual = min_qual
         self.whitelist = whitelist
-        self.write_upstream_region = write_upstream_region
         self.polyt_min_length = polyt_min_length
         self.buffer_dist = self.barcode_len + self.umi_len
 
@@ -71,7 +68,6 @@ class _BarcodeBatchProcessor:
             dict:
                 {
                     local_putative_lines: list[str],
-                    local_upstream_region_lines: list[str],
                     local_putative_freq: Counter,
                     local_anchor_freq: Counter,
                     local_polya: int,
@@ -84,7 +80,6 @@ class _BarcodeBatchProcessor:
                 }
         """
         local_putative_lines = []
-        local_upstream_region_lines = []
         local_putative_freq = Counter()
         local_anchor_freq = Counter()
         local_polya = 0
@@ -193,7 +188,6 @@ class _BarcodeBatchProcessor:
 
         return {
             'local_putative_lines': local_putative_lines,
-            'local_upstream_region_lines': local_upstream_region_lines,
             'local_putative_freq': local_putative_freq,
             'local_anchor_freq': local_anchor_freq,
             'local_polya': local_polya,
@@ -243,7 +237,7 @@ class _BarcodeBatchProcessor:
         expected_pos = 0
         upper_search = expected_pos + self.search_range
 
-        for i in range(0, upper_search):
+        for i in range(upper_search):
             checker = upstream_tail[i:i + self.barcode_len]
             checker_qual = upstream_qual[i:i + self.barcode_len]
             umi = upstream_tail[i + self.barcode_len:i + self.barcode_len + self.umi_len]
@@ -284,10 +278,7 @@ class _BarcodeBatchProcessor:
         end = None
         current_barcode_region_len = None
         for location in aln['locations']:
-            if end is None:
-                end = location[1]
-                current_barcode_region_len = upstream_len - end
-            elif abs(current_barcode_region_len  - self.buffer_dist) > abs((upstream_len - location[1]) - self.buffer_dist):
+            if end is None or abs(current_barcode_region_len  - self.buffer_dist) > abs((upstream_len - location[1]) - self.buffer_dist):
                 end = location[1]
                 current_barcode_region_len = upstream_len - end
 
@@ -458,8 +449,7 @@ class _BarcodeBatchProcessor:
         return returning    
 
 
-def _worker_init(polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int, search_range: int, min_qual: int, whitelist: set[str],
-                 write_upstream_region: bool) -> None:
+def _worker_init(polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int, search_range: int, min_qual: int, whitelist: set[str]) -> None:
     """
     Initializer executed in each worker process to set up a local processor.
 
@@ -471,12 +461,10 @@ def _worker_init(polyt_min_length: int, adapter: str, barcode_len: int, umi_len:
         search_range (int):     The range around the UMI length to look for exact matches
         min_qual (int):         The minimum average quality in a barcode for it to be considered
         whitelist (set):        The whitelist of cell barcodes
-        write_upstream_region (bool): Whether to emit trimmed upstream sequence lines for output
     """
     global _worker_processor
     _worker_processor = _BarcodeBatchProcessor(polyt_min_length, adapter, barcode_len, umi_len, search_range,
-                                              min_qual, whitelist,
-                                              write_upstream_region=write_upstream_region)
+                                              min_qual, whitelist)
 
 
 def _worker_process_batch(records_batch: list[tuple[str, str, str]]) -> dict[str, Any]:
@@ -490,7 +478,6 @@ def _worker_process_batch(records_batch: list[tuple[str, str, str]]) -> dict[str
         dict:
             {
                 local_putative_lines: list[str],
-                local_upstream_region_lines: list[str],
                 local_putative_freq: Counter,
                 local_anchor_freq: Counter,
                 local_polya: int,
@@ -519,7 +506,6 @@ def _safe_future_result(future: Future[dict[str, Any]]) -> dict[str, Any]:
         dict:
             {
                 local_putative_lines: list[str],
-                local_upstream_region_lines: list[str],
                 local_putative_freq: Counter,
                 local_anchor_freq: Counter,
                 local_polya: int,
@@ -703,13 +689,10 @@ def _fit_nb_mixture_3component(anchor_dist: Counter[str], probability_threshold:
         with open(output_csv, "w") as f:
             f.write("barcode,count,prob_noise,damage,prob_real\n")
             sorted_items = sorted(anchor_dist.items(), key=lambda kv: kv[1], reverse=True)
-            for ((barcode, count), noise_prob, damage_prob, real_prob) in zip(sorted_items, probs_noise, probs_damage, probs_real):
-                f.write(
-                    f"{barcode},{count},"
+            f.writelines(f"{barcode},{count},"
                     f"{noise_prob:.6f},"
                     f"{damage_prob:.6f},"
-                    f"{real_prob:.6f}\n"
-                )
+                    f"{real_prob:.6f}\n" for ((barcode, count), noise_prob, damage_prob, real_prob) in zip(sorted_items, probs_noise, probs_damage, probs_real))
 
     return {
         "probs_real": probs_real,
@@ -753,13 +736,13 @@ def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, pro
         probability_threshold (float): Probability cutoff for determining cells
         outfile (str):                 The name of the file to write probability information to
     """
-    counts = np.array(sorted(list(anchor_counter.values()), reverse=True), dtype=float)
+    counts = np.array(sorted(anchor_counter.values(), reverse=True), dtype=float)
 
     real_threshold = np.sum(counts > cutoff)
     xlim_ranked_index = real_threshold * 2
     xlim_probabilty = cutoff *2
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
 
     ax1.scatter(np.arange(len(counts)), counts, s=5)
     ax1.axvline(x=real_threshold, linestyle='--', color='red', label='NB cutoff')
@@ -790,7 +773,7 @@ def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, pro
 def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int,
                      search_range: int, min_qual: int, expected_cells: int,
                      whitelist: set[str] | None = None, processes: int | None = None, batch_size: int = 10000,
-                     upstream_region_tsv: str | None = None, probability_threshold: float = 0.85, max_iter: int = 200) -> tuple[dict[str, int], dict[str, int]]:
+                     probability_threshold: float = 0.85, max_iter: int = 200) -> tuple[dict[str, int], dict[str, int]]:
     """
     Given a fastq file, extract all the barcodes.
 
@@ -806,7 +789,6 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
         whitelist (set):                 The whitelist of cell barcodes that are expected as a set for quick accession
         processes (int):                 Number of worker processes (defaults to cpu_count() - 1)
         batch_size (int):                Number of reads per worker task (default 1000)
-        upstream_region_tsv (str):       Output path for optional TSV of search-window-to-polyT sequences
         probability_threshold (float):   The probability required from the NB mixture to be considered a true anchor.
         max_iter (int):                  The maximum number of iteration for EM.
 
@@ -837,23 +819,15 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
 
     logger.info('Using %d worker processes (batch_size=%d)', max_workers, batch_size)
 
-    # stream through fastq file and submit batches to worker processes (decompression/streaming stays in main process)
-    reader = igzip.open(fastq, 'rt') if fastq.endswith('gz') else open(fastq, 'rt')
-
     # start a process pool
     executor_cm = ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init,
                                       initargs=(polyt_min_length, adapter, barcode_len, umi_len, search_range,
-                                                min_qual, whitelist or set(), upstream_region_tsv is not None))
+                                                min_qual, whitelist or set()))
 
-    optional_upstream_cm = open(upstream_region_tsv, 'w') if upstream_region_tsv is not None else nullcontext(None)
-
-    with (open(putative_barcode_file, 'w') as putative_set_file, optional_upstream_cm as upstream_region_file, executor_cm as executor):
-        if upstream_region_file is not None:
-            upstream_region_file.write('read_id\tsearch_start_to_polyt\n')
-
+    with (open(putative_barcode_file, 'w') as putative_set_file, executor_cm as executor):
         pending = []
         batch = []
-        with reader as file:
+        with igzip.open(fastq, 'rt') if fastq.endswith('gz') else open(fastq, 'rt') as file:
             for seq_title, seq, qual in FastqGeneralIterator(file):
                 seq_title = seq_title.split()[0]
                 batch.append((seq_title, seq, qual))
@@ -868,11 +842,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
                     res = _safe_future_result(done_future)
                     result_dict = res
 
-                    for line in result_dict['local_putative_lines']:
-                        putative_set_file.write(line)
-                    if upstream_region_file is not None:
-                        for line in result_dict['local_upstream_region_lines']:
-                            upstream_region_file.write(line)
+                    putative_set_file.writelines(result_dict['local_putative_lines'])
                     for k, v in result_dict['local_putative_freq'].items():
                         putative_barcodes_freq[k] += v
                     for k, v in result_dict['local_anchor_freq'].items():
@@ -897,11 +867,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
 
                 result_dict = res
 
-                for line in result_dict['local_putative_lines']:
-                    putative_set_file.write(line)
-                if upstream_region_file is not None:
-                    for line in result_dict['local_upstream_region_lines']:
-                        upstream_region_file.write(line)
+                putative_set_file.writelines(result_dict['local_putative_lines'])
                 for k, v in result_dict['local_putative_freq'].items():
                     putative_barcodes_freq[k] += v
                 for k, v in result_dict['local_anchor_freq'].items():
@@ -917,8 +883,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
                     logger.info('Extracted barcodes from %d reads', processed)
 
     with open(anchor_freqs_file, 'w') as out:
-        for key, value in putative_anchors_freq.items():
-            out.write(f'{key},{value}\n')
+        out.writelines(f'{key},{value}\n' for key, value in putative_anchors_freq.items())
 
     prior_count = len(putative_anchors_freq)
 
