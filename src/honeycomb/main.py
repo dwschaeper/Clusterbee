@@ -1,15 +1,16 @@
+#!/usr/bin/env python3
+
+
 import argparse
 import logging
 import os
 
-from src.logging_config import setup_logging
-from src.extract_barcodes import extract_barcodes
-from src.edge_construction_vectorized_levenshtein_fallback import construct_graph_edges
-from src.make_graph import make_graph
-from src.assignment import assignment
-
-from config import set_global_prefix, set_global_outdir
-
+from assignment import assignment
+from config import set_global_outdir, set_global_prefix
+from edge_construction import construct_graph_edges
+from extract_barcodes import extract_barcodes
+from logging_config import setup_logging
+from make_graph import make_graph
 
 setup_logging(level=logging.INFO, logfile="honeycomb.log")
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ def parse_args():
     extraction.add_argument('--min_qual', default=10, type=int,
                         help='The minimum average quality across a barcode for it to be considered a high quality match.')
 
-    extraction.add_argument('--probability_threshold', default=0.85, type=float,
+    extraction.add_argument('--probability_threshold', default=0.70, type=float,
                         help='The probabilty required from the NB mixture to be considered a true anchor.')
 
     extraction.add_argument('--max_iter', default=200, type=int,
@@ -73,9 +74,6 @@ def parse_args():
 
     extraction.add_argument('--expected_cells', default=None, type=int,
                         help='The number cells that were expected to be sequenced.')
-
-    extraction.add_argument('--upstream_region_tsv', default=None, type=str,
-                        help='Optional output TSV path with sequence from the first barcode-search base through the polyT match.')
     
     # edge construction parameters
     edge = parser.add_argument_group('Graph Edge Construction Parameters')
@@ -100,7 +98,7 @@ def parse_args():
     
     # graph construction parameters
     graph = parser.add_argument_group('Graph Construction Parameters')
-    graph.add_argument('--resolution', default=0.05, type=float,
+    graph.add_argument('--resolution', default=0.1, type=float,
                         help='Resolution for leiden clustering.')
 
     graph.add_argument('--iterations', default=-1, type=int,
@@ -137,7 +135,6 @@ if __name__ == '__main__':
                      whitelist=whitelist,
                      processes=arguments.processes,
                      batch_size=arguments.batch_size,
-                     upstream_region_tsv=arguments.upstream_region_tsv,
                      probability_threshold=arguments.probability_threshold,
                      max_iter=arguments.max_iter
                      )
@@ -159,3 +156,7 @@ if __name__ == '__main__':
     graph_data = make_graph(putative_anchors, putative_barcodes, arguments.resolution, arguments.iterations)
 
     assignment(graph_data, set(putative_anchors.keys()), arguments.processes, arguments.batch_size * 50)
+
+    os.remove(os.path.join(arguments.outdir, ".putative_barcodes"))
+    os.remove(os.path.join(arguments.outdir, ".graph_edges"))
+    os.remove(os.path.join(arguments.outdir, ".anchor_freqs"))

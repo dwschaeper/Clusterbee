@@ -1,0 +1,2 @@
+[project.scripts]
+honeycomb = "honeycomb.main:main"

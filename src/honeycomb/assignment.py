@@ -12,9 +12,8 @@ from collections import defaultdict
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from typing import Any
 
-from isal import igzip
-
 import config
+from isal import igzip
 
 logger = logging.getLogger(__name__)
 

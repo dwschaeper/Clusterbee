@@ -9,11 +9,10 @@ import logging
 import os
 from collections import Counter, defaultdict
 
+import config
 import igraph as ig
 import leidenalg as la
 import numpy as np
-
-import config
 
 logger = logging.getLogger(__name__)
 

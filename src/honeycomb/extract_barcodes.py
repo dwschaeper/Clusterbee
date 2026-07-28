@@ -11,6 +11,7 @@ from collections import Counter
 from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from typing import Any
 
+import config
 import edlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,8 +20,6 @@ from Bio.SeqIO.QualityIO import FastqGeneralIterator
 from isal import igzip
 from scipy.special import logsumexp
 from scipy.stats import nbinom
-
-import config
 
 logger = logging.getLogger(__name__)
 

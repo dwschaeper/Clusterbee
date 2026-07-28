@@ -13,11 +13,10 @@ from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 from itertools import combinations
 from typing import Any
 
+import config
 import edlib
 import matplotlib.pyplot as plt
 import numpy as np
-
-import config
 
 logger = logging.getLogger(__name__)
 TRANSLATE = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
