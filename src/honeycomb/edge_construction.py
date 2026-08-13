@@ -532,8 +532,14 @@ def construct_graph_edges(anchors: dict[str, int], putatives: dict[str, int], ma
     logger.info('Number of anchor-putative edges: %d', combined_result['total_edges'])
     logger.info('Number of putative barcodes with associated edges: %d', combined_result['putatives_with_matches'])
     logger.info('Number of putative barcodes without associated edges: %d', combined_result['putatives_without_matches'])
-    logger.info('Assignment distribution: %s', str(combined_result['assigned_method']))
-    logger.info('Distribution of putatives that match multiple anchors %s', str(combined_result['putative_barcodes_match_size']))
+    assigned_line = ''
+    for method, count in combined_result['assigned_method'].items():
+        assigned_line += f'{method}: {count} '
+    logger.info('Assignment distribution: %s', assigned_line)
+    match_size_line = ''
+    for matches, size in combined_result['putative_barcodes_match_size'].items():
+        match_size_line += f'{matches}: {size} '
+    logger.info('Number of anchor matches per putative barcode distribution %s', match_size_line)
 
     anchor_sizes = [len(x) for x in combined_result['anchor_neighborhood'].values()]
     for val in anchor_sizes:

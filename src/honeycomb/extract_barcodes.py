@@ -616,9 +616,9 @@ def _fit_nb_mixture_3component(anchor_dist: Counter[str], probability_threshold:
         z_noise = (ranks >= split2).astype(float)
 
     alpha = np.array([
-        0.88,  # noise
+        0.85,  # noise
         0.05,  # damage
-        0.07   # real
+        0.10   # real
     ]) * prior_strength
 
     pi = alpha / alpha.sum()
@@ -721,7 +721,216 @@ def _fit_nb_mixture_3component(anchor_dist: Counter[str], probability_threshold:
     }
 
 
-def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, probs_noise: np.ndarray, probs_damage: np.ndarray, cutoff: int | None, probability_threshold: float,
+
+def _fit_nb_mixture_2component(
+    anchor_dist: Counter[str],
+    probability_threshold: float,
+    output_csv: str | None = None,
+    expected_cells: int | None = None,
+    prior_strength: int = 200,
+    max_iter: int = 200,
+    tol: float = 1e-6,
+) -> dict[str, Any]:
+    """
+    Deterministic 2-component NB mixture to model the probability that an
+    anchor corresponds to a real cell or noise.
+
+    Args:
+        anchor_dist:
+            Dict-like mapping of anchor/barcode -> frequency.
+        probability_threshold:
+            Cutoff to consider an anchor a real cell from the real component.
+        output_csv:
+            Optional output CSV filename.
+        expected_cells:
+            Number of cells expected to have been sequenced. Used to initialize
+            the real component from the top `expected_cells` anchors.
+        prior_strength:
+            Strength of the Dirichlet prior on the mixing fractions.
+        max_iter:
+            Maximum number of EM iterations.
+        tol:
+            Convergence tolerance on log-likelihood.
+
+    Returns:
+        dict with:
+            probs_real: np.ndarray
+            probs_noise: np.ndarray
+            assignments: np.ndarray
+            threshold: int | None
+            params: {
+                noise: {"r": float, "p": float},
+                real: {"r": float, "p": float},
+                mixing_fractions: {
+                    "noise": float,
+                    "real": float,
+                }
+            }
+    """
+    x = np.array(sorted(anchor_dist.values(), reverse=True), dtype=float)
+    n = len(x)
+
+    if n == 0:
+        return {
+            "probs_real": np.array([], dtype=float),
+            "probs_noise": np.array([], dtype=float),
+            "assignments": np.array([], dtype=int),
+            "threshold": None,
+            "params": {
+                "noise": {"r": 0.0, "p": 0.0},
+                "real": {"r": 0.0, "p": 0.0},
+                "mixing_fractions": {
+                    "noise": 0.0,
+                    "real": 0.0,
+                },
+            },
+        }
+
+    ranks = np.arange(n)
+
+    # -------------------------------------------------------------------------
+    # Initialization
+    # -------------------------------------------------------------------------
+    if expected_cells is not None:
+        real_start = min(expected_cells, n)
+
+        z_real = (ranks < real_start).astype(float)
+        z_noise = (ranks >= real_start).astype(float)
+    else:
+        # Without an expected cell count, initialize from the top/bottom half.
+        split = max(1, n // 2)
+
+        z_real = (ranks < split).astype(float)
+        z_noise = (ranks >= split).astype(float)
+
+    # Dirichlet prior:
+    #   noise = 90%
+    #   real  = 10%
+    alpha = np.array([0.95, 0.5]) * prior_strength
+    pi = alpha / alpha.sum()
+
+    # Initial NB parameters
+    r = np.empty(2, dtype=float)
+    p = np.empty(2, dtype=float)
+
+    r[0], p[0] = _estimate_nb_params(x, z_noise + 1e-3)
+    r[1], p[1] = _estimate_nb_params(x, z_real + 1e-3)
+
+    prev_ll = -np.inf
+    final_log_probs = None
+
+    # -------------------------------------------------------------------------
+    # EM
+    # -------------------------------------------------------------------------
+    for _ in range(max_iter):
+
+        log_probs = np.vstack([
+            np.log(pi[0]) + nbinom.logpmf(x, r[0], p[0]),  # noise
+            np.log(pi[1]) + nbinom.logpmf(x, r[1], p[1]),  # real
+        ])
+
+        denom = logsumexp(log_probs, axis=0)
+        gamma = np.exp(log_probs - denom)
+
+        # Update mixing fractions with Dirichlet prior
+        pi = (gamma.sum(axis=1) + alpha - 1) / (
+            n + alpha.sum() - len(alpha)
+        )
+        pi = np.clip(pi, 1e-6, None)
+        pi /= pi.sum()
+
+        # Update NB parameters
+        r[0], p[0] = _estimate_nb_params(x, gamma[0])  # noise
+        r[1], p[1] = _estimate_nb_params(x, gamma[1])  # real
+
+        # ---------------------------------------------------------------------
+        # Enforce component identity:
+        # noise = lower mean
+        # real  = higher mean
+        # ---------------------------------------------------------------------
+        means = r * (1 - p) / p
+        order = np.argsort(means)
+
+        r = r[order]
+        p = p[order]
+        pi = pi[order]
+
+        # Recompute log probabilities after reordering
+        final_log_probs = np.vstack([
+            np.log(pi[0]) + nbinom.logpmf(x, r[0], p[0]),  # noise
+            np.log(pi[1]) + nbinom.logpmf(x, r[1], p[1]),  # real
+        ])
+
+        ll = logsumexp(final_log_probs, axis=0).sum()
+
+        if np.abs(ll - prev_ll) < tol:
+            break
+
+        prev_ll = ll
+
+    # -------------------------------------------------------------------------
+    # Final posterior probabilities
+    # -------------------------------------------------------------------------
+    denom = logsumexp(final_log_probs, axis=0)
+    gamma = np.exp(final_log_probs - denom)
+
+    probs_noise = gamma[0]
+    probs_real = gamma[1]
+
+    assignments = (probs_real > probability_threshold).astype(int)
+
+    real_counts = np.sort(x[assignments == 1])
+    threshold = int(real_counts[0]) if len(real_counts) > 0 else None
+
+    # -------------------------------------------------------------------------
+    # Optional CSV output
+    # -------------------------------------------------------------------------
+    if output_csv is not None:
+        with open(output_csv, "w") as f:
+            f.write("barcode,count,prob_noise,prob_real\n")
+
+            sorted_items = sorted(
+                anchor_dist.items(),
+                key=lambda kv: kv[1],
+                reverse=True,
+            )
+
+            f.writelines(
+                f"{barcode},{count},{noise_prob:.6f},{real_prob:.6f}\n"
+                for (
+                    (barcode, count),
+                    noise_prob,
+                    real_prob,
+                ) in zip(
+                    sorted_items,
+                    probs_noise,
+                    probs_real,
+                )
+            )
+
+    return {
+        "probs_real": probs_real,
+        "probs_noise": probs_noise,
+        "assignments": assignments,
+        "threshold": threshold,
+        "params": {
+            "noise": {
+                "r": float(r[0]),
+                "p": float(p[0]),
+            },
+            "real": {
+                "r": float(r[1]),
+                "p": float(p[1]),
+            },
+            "mixing_fractions": {
+                "noise": float(pi[0]),
+                "real": float(pi[1]),
+            },
+        },
+    }
+
+
+def _plot_anchor_probs_3component(anchor_counter: Counter[str], probs_real: np.ndarray, probs_noise: np.ndarray, probs_damage: np.ndarray, cutoff: int | None, probability_threshold: float,
                       outfile: str) -> None:
     """
     Plot:
@@ -748,7 +957,7 @@ def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, pro
     ax1.set_title('Anchor Frequency (Ranked)')
     ax1.set_xlabel('Ranked Index')
     ax1.set_ylabel('Frequency')
-    ax1.legend()
+    ax1.legend(loc='upper right')
 
     ax1.set_xlim((0, xlim_ranked_index))
 
@@ -760,7 +969,54 @@ def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, pro
     ax2.set_xlabel('Anchor Frequency')
     ax2.set_ylabel('Probability')
     ax2.axhline(y=probability_threshold, linestyle='--', color='gray', label='Probability Threshold')
-    ax2.legend()
+    ax2.legend(loc='upper right')
+
+    ax2.set_xlim((0,xlim_probabilty))
+
+    plt.tight_layout()
+    plt.savefig(outfile)
+    plt.close()
+
+
+def _plot_anchor_probs_2component(anchor_counter: Counter[str], probs_real: np.ndarray, probs_noise: np.ndarray, cutoff: int | None, probability_threshold: float,
+                      outfile: str) -> None:
+    """
+    Plot:
+    1) ranked anchor counts
+    2) count vs probability
+
+    Args:
+        anchor_counter (Counter):      barcode -> count
+        probs_real (array):            P(real | x) aligned to sorted counts (desc)
+        cutoff (int):                  NB-derived cutoff
+        probability_threshold (float): Probability cutoff for determining cells
+        outfile (str):                 The name of the file to write probability information to
+    """
+    counts = np.array(sorted(anchor_counter.values(), reverse=True), dtype=float)
+
+    real_threshold = np.sum(counts > cutoff)
+    xlim_ranked_index = real_threshold * 2
+    xlim_probabilty = cutoff *2
+
+    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+
+    ax1.scatter(np.arange(len(counts)), counts, s=5)
+    ax1.axvline(x=real_threshold, linestyle='--', color='red', label='NB cutoff')
+    ax1.set_title('Anchor Frequency (Ranked)')
+    ax1.set_xlabel('Ranked Index')
+    ax1.set_ylabel('Frequency')
+    ax1.legend(loc='upper right')
+
+    ax1.set_xlim((0, xlim_ranked_index))
+
+    
+    ax2.scatter(counts, probs_real, s=5, label='P(real)', color='tab:blue')
+    ax2.scatter(counts, probs_noise, s=5, label='P(noise)', color='tab:red')
+    ax2.set_title('P(real | count)')
+    ax2.set_xlabel('Anchor Frequency')
+    ax2.set_ylabel('Probability')
+    ax2.axhline(y=probability_threshold, linestyle='--', color='gray', label='Probability Threshold')
+    ax2.legend(loc='upper right')
 
     ax2.set_xlim((0,xlim_probabilty))
 
@@ -772,7 +1028,7 @@ def _plot_anchor_probs(anchor_counter: Counter[str], probs_real: np.ndarray, pro
 def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_len: int, umi_len: int,
                      search_range: int, min_qual: int, expected_cells: int,
                      whitelist: set[str] | None = None, processes: int | None = None, batch_size: int = 10000,
-                     probability_threshold: float = 0.85, max_iter: int = 200) -> tuple[dict[str, int], dict[str, int]]:
+                     probability_threshold: float = 0.85, max_iter: int = 200, num_components: int =3) -> tuple[dict[str, int], dict[str, int]]:
     """
     Given a fastq file, extract all the barcodes.
 
@@ -886,9 +1142,17 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
 
     prior_count = len(putative_anchors_freq)
 
-    results = _fit_nb_mixture_3component(putative_anchors_freq, probability_threshold, output_csv=probabilities_csv, expected_cells=expected_cells, max_iter=max_iter)
-    cutoff = results['threshold']
-    _plot_anchor_probs(putative_anchors_freq, results['probs_real'], results['probs_noise'], results['probs_damage'], cutoff, probability_threshold, probability_figure)
+    if num_components == 3:
+        results = _fit_nb_mixture_3component(putative_anchors_freq, probability_threshold, output_csv=probabilities_csv, expected_cells=expected_cells, max_iter=max_iter)
+        cutoff = results['threshold']
+        _plot_anchor_probs_3component(putative_anchors_freq, results['probs_real'], results['probs_noise'], results['probs_damage'], cutoff, probability_threshold, probability_figure)
+    elif num_components == 2:
+        results = _fit_nb_mixture_2component(putative_anchors_freq, probability_threshold, output_csv=probabilities_csv, expected_cells=expected_cells, max_iter=max_iter)
+        cutoff = results['threshold']
+        _plot_anchor_probs_2component(putative_anchors_freq, results['probs_real'], results['probs_noise'], cutoff, probability_threshold, probability_figure)
+    else:
+        print('Invalid number of components, only 2 or 3 are acceptable.')
+        exit(1)
 
     putative_anchors_freq = {key: value for key, value in putative_anchors_freq.items() if value >= cutoff}
 

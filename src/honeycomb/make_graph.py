@@ -75,11 +75,9 @@ def _write_info(graph: ig.Graph, header: str) -> None:
                '  Number of communities              : %d\n'
                '  Number of zero anchor communities  : %d\n'
                '  Number of one anchor communities   : %d\n'
-               '  Number of multi anchor communities : %d\n'
-               '  Number of anchors per community    :\n\t%s\n'
-               '  Barcodes per community distribution:\n\t%s',
+               '  Number of multi anchor communities : %d\n',
                len(communities), no_anchor_communities, one_anchor_communities, 
-               multi_anchor_communities, str(Counter(anchor_freq.values())), str(Counter(node_count.values())))   
+               multi_anchor_communities)   
         
 
 def _add_node_attributes(graph: ig.Graph, put_anchor_freq: dict[str, int], put_barcode_freq: dict[str, int]) -> None:

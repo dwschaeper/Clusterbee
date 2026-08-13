@@ -66,6 +66,9 @@ def parse_args():
     extraction.add_argument('--max_iter', default=200, type=int,
                         help='The maximum number of iterations for the EM step.')
 
+    extraction.add_argument('--num_components', default=3, type=int,
+                        help='The number of components to use in the negative binomial mixture model. The only valid options are 2 or 3.')
+
     extraction.add_argument('--adapter', default='CTACACGACGCTCTTCCGATCT', type=str,
                         help='The adapter used during sequencing that will be looked for to anchor the barcode search. The default is for 10X v3')
 
@@ -136,7 +139,8 @@ if __name__ == '__main__':
                      processes=arguments.processes,
                      batch_size=arguments.batch_size,
                      probability_threshold=arguments.probability_threshold,
-                     max_iter=arguments.max_iter
+                     max_iter=arguments.max_iter,
+                     num_components = arguments.num_components
                      )
 
     construct_graph_edges(
