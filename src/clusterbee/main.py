@@ -81,7 +81,7 @@ def parse_args():
     extraction.add_argument('--prior_damage', default=0.05, type=float,
                         help='Prior expectation of the proportion of damage barcodes')
 
-    extraction.add_argument('--prior_real', default=0.05, type=float,
+    extraction.add_argument('--prior_real', default=0.09, type=float,
                         help='Prior expectation of the proportion of real barcodes')
     
     # edge construction parameters
