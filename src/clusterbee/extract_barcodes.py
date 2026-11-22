@@ -896,7 +896,7 @@ def extract_barcodes(fastq: str, polyt_min_length: int, adapter: str, barcode_le
 
     results = _fit_nb_mixture_3component(putative_anchors_freq, probability_threshold, output_csv=probabilities_csv,
                                         expected_cells=expected_cells, prior_noise=prior_noise, prior_damage=prior_damage,
-                                        prior_real=prior_real max_iter=max_iter)
+                                        prior_real=prior_real, max_iter=max_iter)
     cutoff = results['threshold']
     _plot_anchor_probs_3component(putative_anchors_freq, results['probs_real'], results['probs_noise'], results['probs_damage'],
                                  cutoff, probability_threshold, probability_figure)

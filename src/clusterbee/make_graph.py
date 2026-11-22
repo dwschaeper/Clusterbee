@@ -7,7 +7,7 @@ Leiden community detection with anchor-presence filtering.
 
 import logging
 import os
-from collections import Counter, defaultdict
+from collections import defaultdict
 
 import config
 import igraph as ig
