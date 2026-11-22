@@ -72,7 +72,7 @@ def parse_args():
     extraction.add_argument('--adapter', default='CTACACGACGCTCTTCCGATCT', type=str,
                         help='The adapter used during sequencing that will be looked for to anchor the barcode search. The default is for 10X v3')
 
-    extraction.add_argument('--adapter_tail_length', default=10, type=int,
+    extraction.add_argument('--adapter_tail_length', default=8, type=int,
                         help='How many bases of the adapter to look for.')
 
     extraction.add_argument('--expected_cells', default=None, type=int,
@@ -84,7 +84,7 @@ def parse_args():
     edge.add_argument('--max_hamming_dist', default=2, type=int,
                         help='The maximum hamming distance between a putative barcode and an anchor for it to be considered.')
 
-    edge.add_argument('--max_levenshtein_dist', default=3, type=int,
+    edge.add_argument('--max_levenshtein_dist', default=2, type=int,
                         help='The max levenshtein distance between a putative barcode and an anchor for it io be considered.')
 
     edge.add_argument('--keep_best_match_only', action='store_true',
