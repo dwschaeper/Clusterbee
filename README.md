@@ -6,16 +6,24 @@ This repository extracts putative barcodes from FASTQ reads, matches them to a w
 
 ## Overview
 
-The main pipeline is driven by [main.py](main.py) and runs in four stages:
+The main pipeline is driven by [main.py](src/Clusterbee/main.py) and runs in four stages:
 
-1. Barcode extraction from FASTQ reads.
-2. Edge construction between putative barcodes and anchors.
-3. Graph construction and Leiden clustering.
-4. Read assignment to clustered communities.
+1. Barcode extraction from FASTQ reads
+2. Anchor Identification
+3. Graph construction and Leiden clustering
+4. Cell assignment
 
 ## Installation
 
-Create and activate a python virtual environment, then install the Python dependencies.
+Currently, Python version 3.12 is recommended.
+
+Clone the repository:
+
+```bash
+git clone https://github.com/dwschaeper/LR-scRNA-seq-GBBD
+```
+
+Create and activate a python virtual environment, then install the Python dependencies:
 
 ```bash
 python3 -m venv .venv
@@ -23,17 +31,11 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Currently, Python version 3.12 is recommended.
-
-Finally clone the repository and it is ready to run.
-
-```bash
-git clone https://github.com/dwschaeper/LR-scRNA-seq-GBBD
-```
+and then Clusterbee is ready to be launched.
 
 ## Input files
 
-The pipeline expects:
+Clusterbee expects:
 
 - A FASTQ file containing long-read single-cell reads.
 - A whitelist file containing one barcode per line.
@@ -70,11 +72,11 @@ Typical outputs include:
 
 - [main.py](main.py) - command-line entry point.
 - [config.py](config.py) - shared runtime configuration for output prefix and directory.
-- [src/extract_barcodes.py](src/extract_barcodes.py) - barcode extraction and anchor estimation.
-- [src/edge_construction.py](src/edge_construction.py) - barcode matching and edge construction.
-- [src/make_graph.py](src/make_graph.py) - graph assembly and clustering.
-- [src/assignment.py](src/assignment.py) - final read assignment to communities.
-- [src/logging_config.py](src/logging_config.py) - logging helpers.
+- [src/Clusterbee/extract_barcodes.py](src/Clusterbee/extract_barcodes.py) - barcode extraction and anchor estimation.
+- [src/Clusterbee/edge_construction.py](src/Clusterbee/edge_construction.py) - barcode matching and edge construction.
+- [src/Clusterbee/make_graph.py](src/Clusterbee/make_graph.py) - graph assembly and clustering.
+- [src/Clusterbee/assignment.py](src/Clusterbee/assignment.py) - final read assignment to communities.
+- [src/Clusterbee/logging_config.py](src/Clusterbee/logging_config.py) - logging helpers.
 
 ## Notes
 
