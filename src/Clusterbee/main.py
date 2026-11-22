@@ -12,12 +12,12 @@ from extract_barcodes import extract_barcodes
 from logging_config import setup_logging
 from make_graph import make_graph
 
-setup_logging(level=logging.INFO, logfile="honeycomb.log")
+setup_logging(level=logging.INFO, logfile="clusterbee.log")
 logger = logging.getLogger(__name__)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Honeycomb Barcode Deconvolution', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(description='Clusterbee Barcode Deconvolution', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     required = parser.add_argument_group('Required Parameters')
     required.add_argument('-i', '--input', required=True, type=str, 
@@ -38,7 +38,7 @@ def parse_args():
     global_params.add_argument('--outdir', default='results', type=str,
                         help='The output directory used for all generated files.')
 
-    global_params.add_argument('--prefix', default='honeycomb', type=str,
+    global_params.add_argument('--prefix', default='clusterbee', type=str,
                         help='The filename prefix used for all generated files.')
 
 

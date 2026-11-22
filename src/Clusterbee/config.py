@@ -1,4 +1,4 @@
-GLOBAL_PREFIX = "honeycomb"
+GLOBAL_PREFIX = "clusterbee"
 GLOBAL_OUTDIR = "results"
 
 def set_global_prefix(prefix: str):
