@@ -415,7 +415,7 @@ class _BarcodeBatchProcessor:
                      }
 
         # forward strand
-        f_polyt = self._polyt_search(sequence[buffer_bases:250])
+        f_polyt = self._polyt_search(sequence[buffer_bases:275])
         f_polyt['start'] += buffer_bases
         if f_polyt['score'] > 0:
             f_adapter_end = self._adapter_search(sequence[:f_polyt['start']])
@@ -424,7 +424,7 @@ class _BarcodeBatchProcessor:
             returning['f_adapter_end'] = f_adapter_end
 
         # reverse strand
-        r_polyt = self._polyt_search(reverse_seq[buffer_bases:250])
+        r_polyt = self._polyt_search(reverse_seq[buffer_bases:275])
         r_polyt['start'] += buffer_bases
         if r_polyt['score'] > 0:
             r_adapter_end = self._adapter_search(reverse_seq[:r_polyt['start']])
@@ -556,7 +556,7 @@ def _estimate_nb_params(vals: np.ndarray, weights: np.ndarray) -> tuple[float, f
 
 
 def _fit_nb_mixture_3component(anchor_dist: Counter[str], probability_threshold: float, output_csv: str | None = None,
-                              expected_cells: int | None = None, prior_strength: int = 200, max_iter: int = 200,
+                              expected_cells: int | None = None, prior_strength: int = 600, max_iter: int = 200,
                               tol: float = 1e-6) -> dict[str, Any]:
     """
     Deterministic 3-component NB mixture to model the probability an ancho corresponds to a real cell, a damaged cell, or noise.
@@ -616,9 +616,9 @@ def _fit_nb_mixture_3component(anchor_dist: Counter[str], probability_threshold:
         z_noise = (ranks >= split2).astype(float)
 
     alpha = np.array([
-        0.85,  # noise
-        0.05,  # damage
-        0.10   # real
+        0.86,  # noise 85, 87
+        0.05,  # damage 5, 5
+        0.09   # real 10, 8
     ]) * prior_strength
 
     pi = alpha / alpha.sum()
