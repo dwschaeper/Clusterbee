@@ -66,9 +66,6 @@ def parse_args():
     extraction.add_argument('--max_iter', default=200, type=int,
                         help='The maximum number of iterations for the EM step.')
 
-    extraction.add_argument('--num_components', default=3, type=int,
-                        help='The number of components to use in the negative binomial mixture model. The only valid options are 2 or 3.')
-
     extraction.add_argument('--adapter', default='CTACACGACGCTCTTCCGATCT', type=str,
                         help='The adapter used during sequencing that will be looked for to anchor the barcode search. The default is for 10X v3')
 
@@ -77,6 +74,15 @@ def parse_args():
 
     extraction.add_argument('--expected_cells', default=None, type=int,
                         help='The number cells that were expected to be sequenced.')
+
+    extraction.add_argument('--prior_noise', default=0.86, type=float,
+                        help='Prior expectation of the proportion of noise barcodes')
+
+    extraction.add_argument('--prior_damage', default=0.05, type=float,
+                        help='Prior expectation of the proportion of damage barcodes')
+
+    extraction.add_argument('--prior_real', default=0.05, type=float,
+                        help='Prior expectation of the proportion of real barcodes')
     
     # edge construction parameters
     edge = parser.add_argument_group('Graph Edge Construction Parameters')
@@ -140,7 +146,9 @@ if __name__ == '__main__':
                      batch_size=arguments.batch_size,
                      probability_threshold=arguments.probability_threshold,
                      max_iter=arguments.max_iter,
-                     num_components = arguments.num_components
+                     prior_noise=arguments.prior_noise,
+                     prior_damage=arguments.prior_damage,
+                     prior_real=arguments.prior_real
                      )
 
     construct_graph_edges(
