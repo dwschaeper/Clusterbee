@@ -69,7 +69,7 @@ def _worker_process_batch(args: tuple[list[str], int]) -> tuple[dict[int, set[st
                 continue
 
             append(
-                f"@{read_id}|barcode={barcode}|community={community}|community_anchor={community_to_anchor[community]}|umi={umi}\n"
+                f"@{community_to_anchor[community]}_{umi}_{read_id} CB:Z:{community_to_anchor[community]} UB:Z:{umi}\n"
                 f"{seq}\n"
                 f"+\n"
                 f"{seq_qual}"
