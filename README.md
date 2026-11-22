@@ -20,7 +20,7 @@ Currently, Python version 3.12 is recommended.
 Clone the repository:
 
 ```bash
-git clone https://github.com/dwschaeper/LR-scRNA-seq-GBBD
+git clone https://github.com/dwschaeper/Clusterbee
 ```
 
 Create and activate a python virtual environment, then install the Python dependencies:
