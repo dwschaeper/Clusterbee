@@ -1,2 +1,2 @@
 [project.scripts]
-Clusterbee = "Clusterbee.main:main"
+clusterbee = "clusterbee.main:main"
